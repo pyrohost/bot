@@ -12,7 +12,7 @@ use std::collections::hash_map::Entry;
 /// Lorax tree naming system
 #[poise::command(
     slash_command,
-    subcommands("set_role", "set_channel", "start", "submit", "vote", "cancel", "extend", "status", "leaderboard", "edit"),
+    subcommands("set_role", "set_channel", "start", "submit", "vote", "list", "cancel", "extend", "status", "leaderboard", "edit"),
 )]
 pub async fn lorax(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())

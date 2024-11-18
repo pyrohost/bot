@@ -41,7 +41,6 @@ async fn main() -> Result<(), Error> {
             commands: vec![
                 commands::lorax::lorax(),
                 commands::lorax::setup(),
-                commands::lorax::list(),
                 commands::user::modrinth(),
                 commands::query::query(),
                 commands::network::setup_stats(),
