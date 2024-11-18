@@ -68,7 +68,7 @@ pub async fn link(
                 "verify" => {
                     let client = reqwest::Client::new();
                     let response = client
-                        .get(&format!("https://api.modrinth.com/v2/user/{}", modrinth_id))
+                        .get(format!("https://api.modrinth.com/v2/user/{}", modrinth_id))
                         .send()
                         .await?;
 

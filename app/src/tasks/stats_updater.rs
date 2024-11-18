@@ -77,7 +77,7 @@ impl ChannelUpdater {
                     "Failed to update {} metric for guild {}: {}",
                     metric.name, guild_id, e
                 );
-                return Err(e.into());
+                return Err(e);
             }
         }
         Ok(())

@@ -20,11 +20,21 @@ pub struct GuildSettings {
 impl GuildSettings {
     pub fn get_stats_channels(&self) -> Vec<serenity::ChannelId> {
         let mut channels = Vec::new();
-        if let Some(ch) = self.nodes_channel { channels.push(ch); }
-        if let Some(ch) = self.network_channel { channels.push(ch); }
-        if let Some(ch) = self.network_total_channel { channels.push(ch); }
-        if let Some(ch) = self.storage_channel { channels.push(ch); }
-        if let Some(ch) = self.memory_channel { channels.push(ch); }
+        if let Some(ch) = self.nodes_channel {
+            channels.push(ch);
+        }
+        if let Some(ch) = self.network_channel {
+            channels.push(ch);
+        }
+        if let Some(ch) = self.network_total_channel {
+            channels.push(ch);
+        }
+        if let Some(ch) = self.storage_channel {
+            channels.push(ch);
+        }
+        if let Some(ch) = self.memory_channel {
+            channels.push(ch);
+        }
         channels
     }
 }
@@ -109,10 +119,14 @@ impl Settings {
     }
 
     pub fn get_user_settings(&self, user_id: UserId) -> UserSettings {
-        self.user_settings.get(&user_id).cloned().unwrap_or_default()
+        self.user_settings
+            .get(&user_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn set_user_settings(&mut self, user_id: UserId, settings: UserSettings) {
         self.user_settings.insert(user_id, settings);
     }
 }
+

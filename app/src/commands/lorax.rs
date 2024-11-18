@@ -7,6 +7,7 @@ use poise::serenity_prelude::{
 };
 use poise::CreateReply;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 /// Lorax tree naming system
 #[poise::command(
@@ -409,12 +410,13 @@ pub async fn submit(
             return Ok(());
         }
 
-        if submissions.contains_key(&user_id) {
-            ctx.say("You have already submitted a tree name.").await?;
-        } else {
-            submissions.insert(user_id, tree_name.clone());
-            ctx.say("Your tree name has been submitted!").await?;
-        }
+        if let Entry::Vacant(entry) = submissions.entry(user_id) {
+             entry.insert(tree_name.clone());
+             ctx.say("Your tree name has been submitted!").await?;
+         } else {
+             ctx.say("You have already submitted a tree name.").await?;
+         }
+
         settings.save()?;
     } else {
         ctx.say("Submissions are not currently open.").await?;
