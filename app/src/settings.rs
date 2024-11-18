@@ -57,6 +57,7 @@ pub enum LoraxState {
         message_id: serenity::MessageId,
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
+        submissions: HashMap<UserId, String>,
     },
 }
 

@@ -3,7 +3,7 @@ use crate::settings::LoraxState;
 use crate::{Context, Data, Error};
 use chrono::{Duration, Utc};
 use poise::serenity_prelude::{
-    self as serenity, ButtonStyle, ChannelId, Color, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, RoleId, UserId
+    self as serenity, ButtonStyle, ChannelId, Color, ComponentInteraction, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, RoleId
 };
 use poise::CreateReply;
 use std::collections::HashMap;
@@ -94,7 +94,6 @@ pub async fn start(
 
         // Announce the start of submissions
         let channel_id = guild_settings.lorax_channel.unwrap();
-        let role_id = guild_settings.lorax_role.unwrap();
         let announcement_msg = channel_id.say(&ctx, announcement).await?;
 
         // Update LoraxState to Submissions
@@ -109,12 +108,14 @@ pub async fn start(
         let data = ctx.data().clone();
         let ctx_clone = ctx.serenity_context().clone();
         tokio::spawn(async move {
+            let seconds = submission_duration as i64 * 60;
             tokio::time::sleep(
-                Duration::seconds(submission_duration as i64 * 60)
+                Duration::seconds(seconds)
                     .to_std()
                     .unwrap(),
             )
             .await;
+
             if let Err(e) = start_voting(&ctx_clone, &data, guild_id, voting_duration).await {
                 tracing::error!("Failed to start voting: {}", e);
             }
@@ -138,9 +139,13 @@ async fn start_voting(
     let mut settings = data.settings.write().await;
     let state = &settings.guilds.get(&guild_id).unwrap().lorax_state;
 
+    let channel_id = settings.guilds.get(&guild_id).unwrap().lorax_channel.unwrap();
+    let role_id = settings.guilds.get(&guild_id).unwrap().lorax_role.unwrap();
+
     if let LoraxState::Submissions { submissions, .. } = state {
         if submissions.is_empty() {
             // No submissions, end the event
+            channel_id.say(ctx, "🚫 Voting is cancelled due to no submissions!").await?;
             settings.guilds.get_mut(&guild_id).unwrap().lorax_state = LoraxState::Idle;
             settings.save()?;
             return Ok(());
@@ -150,8 +155,6 @@ async fn start_voting(
         let options = submissions.values().cloned().collect::<Vec<_>>();
         let submission_count = options.len();
 
-        let channel_id = settings.guilds.get(&guild_id).unwrap().lorax_channel.unwrap();
-        let role_id = settings.guilds.get(&guild_id).unwrap().lorax_role.unwrap();
         
         let announcement = format!(
             "<@&{}> Voting is now open! 🗳️\n\n🌳 {} tree names have been submitted\nVoting closes {}\n\nUse `/lorax vote` to view and vote for submissions\n**Note:** You cannot vote for your own submission",
@@ -167,6 +170,8 @@ async fn start_voting(
             message_id: announcement_msg.id,
             options,
             votes: HashMap::new(),
+            // We need access to the submissions in the Voting.
+            submissions: submissions.clone(),
         };
         settings.save()?;
 
@@ -174,8 +179,9 @@ async fn start_voting(
         let data_clone = data.clone();
         let ctx_clone = ctx.clone();
         tokio::spawn(async move {
+            let seconds = voting_duration as i64 * 60;
             tokio::time::sleep(
-                Duration::seconds(voting_duration as i64 * 60)
+                Duration::seconds(seconds)
                     .to_std()
                     .unwrap(),
             )
@@ -199,7 +205,9 @@ async fn announce_winner(
     // Remove unused guild_settings variable and use direct access
     let guild = settings.guilds.get(&guild_id).unwrap();
 
-    if let LoraxState::Voting { options, votes, .. } = &guild.lorax_state {
+    let channel_id = guild.lorax_channel.unwrap();
+
+    if let LoraxState::Voting { options, votes, submissions, .. } = &guild.lorax_state {
         // Tally votes
         let mut vote_counts = HashMap::new();
         for &choice in votes.values() {
@@ -210,18 +218,12 @@ async fn announce_winner(
 
         if let Some((&winning_option, count)) = vote_counts.iter().max_by_key(|&(_, count)| count) {
             let winning_tree = &options[winning_option];
-            let submissions =
-                if let LoraxState::Submissions { submissions, .. } = &guild.lorax_state {
-                    submissions
-                } else {
-                    &HashMap::new()
-                };
+
             let winner_mention = submissions
                 .iter()
                 .find(|(_, tree)| *tree == winning_tree)
                 .map_or("Unknown User".to_string(), |(user_id, _)| format!("<@{}>", user_id));
 
-            let channel_id = guild.lorax_channel.unwrap();
             let role_id = guild.lorax_role.unwrap();
             let vote_distribution = options
                 .iter()
@@ -254,8 +256,10 @@ async fn announce_winner(
             );
             channel_id.say(ctx, announcement).await?;
         } else {
+            // NOTE: If we have no votes but only 1 tree, maybe we should just crown that the winner?
+            // Especially if we aren't able to vote for our own submission.
+
             // No votes, announce no winner
-            let channel_id = guild.lorax_channel.unwrap();
             channel_id
                 .say(ctx, "No votes were cast. No tree was selected.")
                 .await?;
@@ -833,7 +837,7 @@ pub async fn handle_button(
         // Validate vote and check end time
         if let Some(guild) = settings.guilds.get(&guild_id) {
             if let LoraxState::Voting {
-                options, end_time, ..
+                options, end_time, submissions, ..
             } = &guild.lorax_state {
                 if Utc::now().timestamp() > *end_time {
                     let builder = serenity::CreateInteractionResponse::Message(
@@ -848,22 +852,20 @@ pub async fn handle_button(
 
                 if let Some(selected_tree) = options.get(choice) {
                     // Check if user is voting for their own submission
-                    if let LoraxState::Submissions { submissions, .. } = &guild.lorax_state {
-                        if let Some(submitter_id) = submissions
-                            .iter()
-                            .find(|(_, tree)| *tree == selected_tree)
-                            .map(|(id, _)| *id)
-                        {
-                            if submitter_id == user_id {
-                                let builder = serenity::CreateInteractionResponse::Message(
-                                    CreateInteractionResponseMessage::default()
-                                        .ephemeral(true)
-                                        .content("You cannot vote for your own submission."),
-                                );
+                    if let Some(submitter_id) = submissions
+                        .iter()
+                        .find(|(_, tree)| *tree == selected_tree)
+                        .map(|(id, _)| *id)
+                    {
+                        if submitter_id == user_id {
+                            let builder = serenity::CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::default()
+                                    .ephemeral(true)
+                                    .content("You cannot vote for your own submission."),
+                            );
 
-                                component.create_response(ctx, builder).await?;
-                                return Ok(());
-                            }
+                            component.create_response(ctx, builder).await?;
+                            return Ok(());
                         }
                     }
                 }
