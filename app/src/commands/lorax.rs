@@ -3,12 +3,14 @@ use crate::settings::LoraxState;
 use crate::{Context, Data, Error};
 use chrono::{Duration, Utc};
 use poise::serenity_prelude::{
-    self as serenity, ButtonStyle, ChannelId, Color, ComponentInteraction, CreateActionRow,
-    CreateButton, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseMessage,
-    CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, RoleId, UserId,
+    self as serenity, futures, ButtonStyle, ChannelId, Color, ComponentInteraction,
+    CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter,
+    CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, RoleId, UserId,
 };
 use poise::CreateReply;
 use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
 
 /// Lorax - Tree-themed Node Naming System
 #[poise::command(
@@ -137,7 +139,8 @@ pub async fn start(
             }
         });
 
-        ctx.say("🎉 Lorax event started! Submissions are now open.").await?;
+        ctx.say("🎉 Lorax event started! Submissions are now open.")
+            .await?;
     } else {
         ctx.say("⚠️ A Lorax event is already in progress.").await?;
     }
@@ -189,7 +192,7 @@ pub async fn start_voting(
         let announcement = format!(
             "Hey <@&{}>! It's voting time for our new **{}** node! 🗳️\n\n\
             We've got {} awesome name suggestions. Use `/lorax vote` to pick your favorite!\n\n\
-            Voting ends {}. Don't miss out!",
+            Voting ends {}.",
             role_id,
             location,
             submission_count,
@@ -336,10 +339,7 @@ pub async fn announce_winner(
             let announcement = format!(
                 "{}And the winning name is... `{}`! Congratulations, {}! 🎊\n\n\
                 **Final Results:**\n{}\n\nThanks to everyone who participated!",
-                announcement_prefix,
-                winning_tree,
-                winner_mention,
-                top_three
+                announcement_prefix, winning_tree, winner_mention, top_three
             );
             channel_id.say(ctx, announcement).await?;
         } else {
@@ -453,7 +453,8 @@ pub async fn cancel(ctx: Context<'_>) -> Result<(), Error> {
                 .await?;
             settings.guilds.get_mut(&guild_id).unwrap().lorax_state = LoraxState::Idle;
             settings.save()?;
-            ctx.say("Alright, the current Lorax event has been cancelled and reset. 🛑").await?;
+            ctx.say("Alright, the current Lorax event has been cancelled and reset. 🛑")
+                .await?;
         }
     }
     Ok(())
@@ -478,7 +479,10 @@ pub async fn duration(
 
             // Ensure we don't set end time in the past
             if new_end <= current_time {
-                ctx.say("Hmm, I can't set the end time to the past. Let's try a different amount. ⏳").await?;
+                ctx.say(
+                    "Hmm, I can't set the end time to the past. Let's try a different amount. ⏳",
+                )
+                .await?;
                 return Ok(());
             }
 
@@ -580,6 +584,7 @@ pub async fn vote(
     #[description = "Search for specific names"] search: Option<String>,
 ) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
+    info!("Processing vote command for guild {}", guild_id);
     let user_id = ctx.author().id;
     let settings = ctx.data().settings.read().await;
     let page = page.unwrap_or(1).max(1);
@@ -620,31 +625,37 @@ pub async fn vote(
             let mut components = Vec::new();
 
             // Create select menu for voting
-            let select_options = page_options
-                .iter()
-                .map(|(i, name)| {
+            let select_options = futures::future::join_all(page_options.iter().map(|(i, name)| {
+                let ctx = ctx.clone();
+                let submissions = submissions.clone();
+                async move {
+                    let submitter_name = get_submitter_name(
+                        ctx.serenity_context(),
+                        *submissions.iter().find(|(_, n)| n == name).unwrap().0,
+                        ctx.guild_id().unwrap(),
+                    )
+                    .await;
                     CreateSelectMenuOption::new(
-                        format!(
-                            "{} - Submitted by {}",
-                            name,
-                            get_submitter_name(submissions, name)
-                        ),
+                        format!("{} - Submitted by {}", name, submitter_name),
                         i.to_string(),
                     )
                     .default_selection(votes.get(&user_id) == Some(&i))
-                })
-                .collect::<Vec<_>>();
+                }
+            }))
+            .await;
 
             if !select_options.is_empty() {
-                components.push(CreateActionRow::SelectMenu(
-                    CreateSelectMenu::new(
-                        "vote_select",
-                        CreateSelectMenuKind::String {
-                            options: select_options,
-                        },
-                    )
-                    .placeholder("Select a tree name to vote for"),
-                ));
+                let select_menu = CreateSelectMenu::new(
+                    "vote_select",
+                    CreateSelectMenuKind::String {
+                        options: select_options,
+                    },
+                )
+                .custom_id(format!("vote_select_{}", page))
+                .placeholder("Select a tree name to vote for")
+                .max_values(1);
+
+                components.push(CreateActionRow::SelectMenu(select_menu));
             }
 
             // Add navigation buttons if needed
@@ -652,14 +663,14 @@ pub async fn vote(
                 let mut nav_buttons = Vec::new();
                 if page > 1 {
                     nav_buttons.push(
-                        CreateButton::new(format!("page_{}", page - 1))
+                        CreateButton::new(format!("vote_page_{}", page - 1))
                             .label("Previous")
                             .style(ButtonStyle::Secondary),
                     );
                 }
                 if page < total_pages as u32 {
                     nav_buttons.push(
-                        CreateButton::new(format!("page_{}", page + 1))
+                        CreateButton::new(format!("vote_page_{}", page + 1))
                             .label("Next")
                             .style(ButtonStyle::Secondary),
                     );
@@ -669,35 +680,118 @@ pub async fn vote(
                 }
             }
 
-            let _current_vote = votes.get(&user_id).map(|&idx| &options[idx]);
             let header = format!(
                 "🗳️ **Voting is now open!**\n\nSelect your favorite tree name from the menu below.\n\n_Voting ends {}_\n",
                 discord_timestamp(*end_time, TimestampStyle::Relative)
             );
 
-            ctx.send(
-                CreateReply::default()
-                    .content(header)
-                    .components(components)
-                    .ephemeral(true),
-            )
+            ctx.send(CreateReply::default()
+                .content(header)
+                .components(components)
+                .ephemeral(true))
             .await?;
         } else {
-            ctx.say("⚠️ Voting is not currently open. Stay tuned!")
-                .await?;
+            ctx.say("⚠️ Voting is not currently open. Stay tuned!").await?;
         }
     }
 
     Ok(())
 }
 
-// Helper function to get submitter's name
-fn get_submitter_name(submissions: &HashMap<UserId, String>, tree_name: &str) -> String {
-    submissions
-        .iter()
-        .find(|(_, name)| name.as_str() == tree_name)
-        .map(|(user_id, _)| format!("<@{}>", user_id))
-        .unwrap_or_else(|| "Unknown".to_string())
+// Helper function to get submitter's name - move this before it's used
+async fn get_submitter_name(
+    ctx: &serenity::Context,
+    user_id: serenity::UserId,
+    guild_id: serenity::GuildId,
+) -> String {
+    match user_id.to_user(ctx).await {
+        Ok(user) => user.name,
+        Err(_) => {
+            warn!("Failed to fetch user name for user ID {}", user_id);
+            "Unknown User".to_string()
+        }
+    }
+}
+
+// Single handle_button implementation
+pub async fn handle_button(
+    ctx: &serenity::Context,
+    component: &ComponentInteraction,
+    data: Data,
+) -> Result<(), Error> {
+    debug!("Handling button interaction: {}", component.data.custom_id);
+
+    if component.data.custom_id.starts_with("vote_page_") {
+        if let Ok(_page) = component.data.custom_id[10..].parse::<u32>() {
+            let builder = serenity::CreateInteractionResponse::UpdateMessage(
+                CreateInteractionResponseMessage::default()
+                    .content("Loading...".to_string())
+                    .ephemeral(true),
+            );
+            component.create_response(ctx, builder).await?;
+        }
+        return Ok(());
+    }
+
+    if component.data.custom_id.starts_with("vote_select_") {
+        let choice = match &component.data.kind {
+            serenity::ComponentInteractionDataKind::StringSelect { values } => {
+                values.first().and_then(|v| v.parse::<usize>().ok())
+            }
+            _ => None,
+        };
+
+        if let Some(choice) = choice {
+            let guild_id = component.guild_id.unwrap();
+            let user_id = component.user.id;
+            
+            // Clone necessary data before the mutable borrow
+            let mut settings = data.settings.write().await;
+            let response = if let Some(guild) = settings.guilds.get_mut(&guild_id) {
+                if let LoraxState::Voting { votes, options, end_time, submissions, .. } = &mut guild.lorax_state {
+                    if Utc::now().timestamp() > *end_time {
+                        info!("Rejecting vote: voting period ended");
+                        return Ok(());
+                    }
+
+                    if let Some(selected_tree) = options.get(choice).cloned() {
+                        if let Some((submitter_id, _)) = submissions.iter().find(|(_, tree)| *tree == &selected_tree) {
+                            if *submitter_id == user_id {
+                                debug!("User {} attempted to vote for own submission", user_id);
+                                "You can't vote for your own submission!".to_string()
+                            } else {
+                                let previous_vote = votes.insert(user_id, choice);
+                                settings.save()?;
+                                
+                                if previous_vote.is_some() {
+                                    format!("👍 Got it! You've changed your vote to `{}`.", selected_tree)
+                                } else {
+                                    format!("👍 Thanks! You've voted for `{}`.", selected_tree)
+                                }
+                            }
+                        } else {
+                            "Invalid selection".to_string()
+                        }
+                    } else {
+                        "Invalid selection".to_string()
+                    }
+                } else {
+                    "Voting is not currently active".to_string()
+                }
+            } else {
+                "Server not found".to_string()
+            };
+
+            let builder = serenity::CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::default()
+                    .content(response)
+                    .ephemeral(true),
+            );
+            component.create_response(ctx, builder).await?;
+        }
+    }
+
+    Ok(())
 }
 
 /// View the current Lorax event status
@@ -765,7 +859,7 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
                 end_time,
                 ..
             } => {
-                if !is_admin {
+                if (!is_admin) {
                     ctx.say(
                         "Only administrators can view submissions during the submission phase.",
                     )
@@ -773,10 +867,20 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
                     return Ok(());
                 }
 
-                let submission_list = submissions
-                    .iter()
-                    .map(|(user_id, name)| format!("• `{}` (by <@{}>)", name, user_id))
-                    .collect::<Vec<_>>()
+                let submission_list =
+                    futures::future::join_all(submissions.iter().map(|(user_id, name)| {
+                        let ctx = ctx.clone();
+                        async move {
+                            let submitter_name = get_submitter_name(
+                                ctx.serenity_context(),
+                                *user_id,
+                                ctx.guild_id().unwrap(),
+                            )
+                            .await;
+                            format!("• `{}` (by {})", name, submitter_name)
+                        }
+                    }))
+                    .await
                     .join("\n");
 
                 ctx.send(
@@ -800,28 +904,77 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
                 .await?;
             }
             LoraxState::Voting {
-                options, end_time, ..
+                options,
+                votes,
+                end_time,
+                ..
             } => {
-                let options_list = options
-                    .iter()
-                    .map(|name| format!("• {}", name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                if !is_admin {
+                    // Non-admins see the regular list
+                    let options_list = options
+                        .iter()
+                        .map(|name| format!("• {}", name))
+                        .collect::<Vec<_>>()
+                        .join("\n");
 
-                ctx.send(
-                    CreateReply::default().embed(
-                        CreateEmbed::default()
-                            .title("🌳 Submitted Tree Names")
-                            .description(options_list)
-                            .footer(CreateEmbedFooter::new(format!(
-                                "Voting closes {} • Total: {}",
-                                discord_timestamp(*end_time, TimestampStyle::ShortDateTime),
-                                options.len()
-                            )))
-                            .color(Color::from_rgb(67, 160, 71)),
-                    ),
-                )
-                .await?;
+                    ctx.send(
+                        CreateReply::default().embed(
+                            CreateEmbed::default()
+                                .title("🌳 Submitted Tree Names")
+                                .description(options_list)
+                                .footer(CreateEmbedFooter::new(format!(
+                                    "Voting closes {} • Total: {}",
+                                    discord_timestamp(*end_time, TimestampStyle::ShortDateTime),
+                                    options.len()
+                                )))
+                                .color(Color::from_rgb(67, 160, 71)),
+                        ),
+                    )
+                    .await?;
+                } else {
+                    // Admins see vote counts
+                    let mut vote_counts: HashMap<usize, usize> = HashMap::new();
+                    for &choice in votes.values() {
+                        *vote_counts.entry(choice).or_insert(0) += 1;
+                    }
+
+                    let mut options_with_votes: Vec<_> = options
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, name)| {
+                            let votes = vote_counts.get(&idx).unwrap_or(&0);
+                            (name, *votes)
+                        })
+                        .collect();
+
+                    // Sort by vote count (descending)
+                    options_with_votes.sort_by(|a, b| b.1.cmp(&a.1));
+
+                    let options_list = options_with_votes
+                        .iter()
+                        .map(|(name, votes)| format!("• {} ({} votes)", name, votes))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    ctx.send(
+                        CreateReply::default().embed(
+                            CreateEmbed::default()
+                                .title("🌳 Current Voting Status")
+                                .description(if options_list.is_empty() {
+                                    "No submissions yet.".to_string()
+                                } else {
+                                    options_list
+                                })
+                                .footer(CreateEmbedFooter::new(format!(
+                                    "Voting closes {} • Total votes: {}",
+                                    discord_timestamp(*end_time, TimestampStyle::ShortDateTime),
+                                    votes.len()
+                                )))
+                                .color(Color::from_rgb(67, 160, 71)),
+                        ),
+                    )
+                    .await?;
+                }
             }
             LoraxState::Idle => {
                 ctx.say("No active tree naming event.").await?;
@@ -899,107 +1052,6 @@ pub async fn setup(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-pub async fn handle_button(
-    ctx: &serenity::Context,
-    component: &ComponentInteraction,
-    data: Data,
-) -> Result<(), Error> {
-    // Handle page navigation
-    if component.data.custom_id.starts_with("page_") {
-        // Handle pagination - implement if needed
-        return Ok(());
-    }
-
-    // Handle vote selection
-    if component.data.custom_id == "vote_select" {
-        let choice = match &component.data.kind {
-            serenity::ComponentInteractionDataKind::StringSelect { values } => {
-                if let Some(value) = values.first() {
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| "Invalid vote selection")?
-                } else {
-                    return Ok(());
-                }
-            }
-            _ => return Ok(()),
-        };
-
-        let guild_id = component.guild_id.unwrap();
-        let user_id = component.user.id;
-
-        let mut settings = data.settings.write().await;
-
-        // Validate vote and check end time
-        if let Some(guild) = settings.guilds.get(&guild_id) {
-            if let LoraxState::Voting {
-                options,
-                end_time,
-                submissions,
-                ..
-            } = &guild.lorax_state
-            {
-                if Utc::now().timestamp() > *end_time {
-                    let builder = serenity::CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::default()
-                            .ephemeral(true)
-                            .content("Voting period has ended."),
-                    );
-
-                    component.create_response(ctx, builder).await?;
-                    return Ok(());
-                }
-
-                if let Some(selected_tree) = options.get(choice) {
-                    // Check if user is voting for their own submission
-                    if let Some(submitter_id) = submissions
-                        .iter()
-                        .find(|(_, tree)| *tree == selected_tree)
-                        .map(|(id, _)| *id)
-                    {
-                        if submitter_id == user_id {
-                            let builder = serenity::CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::default()
-                                    .ephemeral(true)
-                                    .content("You can't vote for your own submission! Please choose a different name."),
-                            );
-
-                            component.create_response(ctx, builder).await?;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Record the vote
-        if let Some(guild) = settings.guilds.get_mut(&guild_id) {
-            if let LoraxState::Voting { votes, options, .. } = &mut guild.lorax_state {
-                let previous_vote = votes.insert(user_id, choice);
-
-                let tree_name = &options[choice];
-                let response = if previous_vote.is_some() {
-                    format!("👍 Got it! You've changed your vote to `{}`.", tree_name)
-                } else {
-                    format!("👍 Thanks! You've voted for `{}`.", tree_name)
-                };
-
-                let builder = serenity::CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::default()
-                        .ephemeral(true)
-                        .content(response),
-                );
-
-                component.create_response(ctx, builder).await?;
-
-                settings.save()?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Remove a submission from the current event
 #[poise::command(slash_command, required_permissions = "MANAGE_MESSAGES")]
 pub async fn remove(
@@ -1019,7 +1071,10 @@ pub async fn remove(
                 settings.save()?;
 
                 let msg = if let Some(reason) = reason {
-                    format!("✅ Removed submission `{}` (Reason: {}).", tree_name, reason)
+                    format!(
+                        "✅ Removed submission `{}` (Reason: {}).",
+                        tree_name, reason
+                    )
                 } else {
                     format!("✅ Removed submission `{}`.", tree_name)
                 };
@@ -1040,7 +1095,7 @@ pub async fn remove(
                 votes.retain(|_, &mut vote_idx| vote_idx != index);
                 // Adjust remaining vote indices
                 for vote_idx in votes.values_mut() {
-                    if *vote_idx > index {
+                    if (*vote_idx) > index {
                         *vote_idx -= 1;
                     }
                 }
@@ -1079,30 +1134,31 @@ pub async fn force_end(
     let data = ctx.data().clone();
     let serenity_ctx = ctx.serenity_context().clone();
 
-    let mut settings = data.settings.write().await;
-    match &settings.guilds.get(&guild_id).unwrap().lorax_state {
-        LoraxState::Submissions { .. } => {
-            drop(settings); // Drop the lock before the next async call
+    let settings = data.settings.write().await;
+    let state = settings.guilds.get(&guild_id).unwrap().lorax_state.clone();
+    drop(settings);
 
+    match state {
+        LoraxState::Submissions { .. } => {
             let msg = if let Some(reason) = reason {
-                format!("🚨 Force ending the current phase! ({})", reason)
+                format!("🚨 Force ending submission phase! ({})", reason)
             } else {
-                "🚨 Force ending the current phase!".to_string()
+                "🚨 Force ending submission phase!".to_string()
             };
             ctx.say(&msg).await?;
-
+            
+            info!("Force ending submission phase for guild {}", guild_id);
             start_voting(&serenity_ctx, &data, guild_id, 60).await?;
         }
         LoraxState::Voting { .. } => {
-            drop(settings); // Drop the lock before the next async call
-
             let msg = if let Some(reason) = reason {
-                format!("🚨 Force ending the current phase! ({})", reason)
+                format!("🚨 Force ending voting phase! ({})", reason)
             } else {
-                "🚨 Force ending the current phase!".to_string()
+                "🚨 Force ending voting phase!".to_string()
             };
             ctx.say(&msg).await?;
-
+            
+            info!("Force ending voting phase for guild {}", guild_id);
             announce_winner(&serenity_ctx, &data, guild_id).await?;
         }
         LoraxState::Idle => {
