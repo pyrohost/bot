@@ -47,7 +47,6 @@ async fn main() -> Result<(), Error> {
         .options(poise::FrameworkOptions {
             commands: vec![
                 commands::lorax::lorax(),
-                commands::lorax::setup(),
                 commands::modrinth::modrinth(),
                 commands::query::query(),
                 commands::network::setup_stats(),

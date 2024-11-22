@@ -70,6 +70,7 @@ pub enum LoraxState {
         message_id: serenity::MessageId,
         submissions: HashMap<UserId, String>,
         location: String,
+        tiebreaker_duration: u64,
     },
     Voting {
         end_time: i64,
@@ -78,6 +79,17 @@ pub enum LoraxState {
         votes: HashMap<UserId, usize>,
         submissions: HashMap<UserId, String>,
         location: String,
+        tiebreaker_duration: u64,
+    },
+    TieBreaker {
+        end_time: i64,
+        message_id: serenity::MessageId,
+        options: Vec<String>,
+        votes: HashMap<UserId, usize>,
+        location: String,
+        round: u32,
+        tiebreaker_duration: u64,
+        submissions: HashMap<UserId, String>, // Added this field
     },
 }
 

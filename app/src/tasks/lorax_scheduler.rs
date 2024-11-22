@@ -26,7 +26,7 @@ impl LoraxSchedulerTask {
         
         match state {
             LoraxState::Submissions { end_time, .. } if now < *end_time => {
-                let delay = Duration::from_secs((end_time - now) as u64);
+                let delay = Duration::from_secs((*end_time - now) as u64);
                 let data = data.clone();
                 let ctx = ctx.clone();
                 
@@ -37,21 +37,91 @@ impl LoraxSchedulerTask {
                     }
                 });
             }
-            LoraxState::Voting { end_time, .. } if now < *end_time => {
-                // Schedule winner announcement
-                let delay = Duration::from_secs((end_time - now) as u64);
+            LoraxState::Voting { end_time, .. } | LoraxState::TieBreaker { end_time, .. } if now < *end_time => {
+                let delay = Duration::from_secs((*end_time - now) as u64);
                 let data = data.clone();
-                let ctx = ctx.clone();
+                let http = ctx.http.clone();
                 
                 tokio::spawn(async move {
                     sleep(delay).await;
-                    if let Err(e) = announce_winner(&ctx, &data, guild_id).await {
+                    if let Err(e) = announce_winner(&http, &data, guild_id).await {
                         error!("Failed to announce winner after recovery: {}", e);
                     }
                 });
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    // this shit's nasty 
+    // -ellie
+    pub async fn schedule_state_transition(
+        &self,
+        ctx: &serenity::Context,
+        data: &Data,
+        guild_id: serenity::GuildId,
+        state: LoraxState,
+        role_id: Option<serenity::RoleId>,
+    ) -> Result<(), Error> {
+        match &state {
+            LoraxState::Submissions { end_time, .. } => {
+                let delay = Duration::from_secs((*end_time - Utc::now().timestamp()) as u64);
+                let data = data.clone();
+                let ctx = ctx.clone();
+                
+                tokio::spawn(async move {
+                    sleep(delay).await;
+                    if let Err(e) = start_voting(&ctx, &data, guild_id, 60).await {
+                        error!("Failed to start voting phase: {}", e);
+                    }
+                });
+            }
+            LoraxState::Voting { end_time, .. } | LoraxState::TieBreaker { end_time, .. } => {
+                let delay = Duration::from_secs((*end_time - Utc::now().timestamp()) as u64);
+                let data = data.clone();
+                let http = ctx.http.clone();
+                
+                tokio::spawn(async move {
+                    sleep(delay).await;
+                    if let Err(e) = announce_winner(&http, &data, guild_id).await {
+                        error!("Failed to announce winner: {}", e);
+                    }
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub async fn schedule_next_phase(
+        ctx: &serenity::Context,
+        data: &Data,
+        guild_id: serenity::GuildId,
+        end_time: i64,
+        current_state: LoraxState,
+    ) -> Result<(), Error> {
+        let delay = Duration::from_secs((end_time - Utc::now().timestamp()) as u64);
+        let data = data.clone();
+        let ctx = ctx.clone();
+
+        tokio::spawn(async move {
+            sleep(delay).await;
+            match current_state {
+                LoraxState::Submissions { .. } => {
+                    if let Err(e) = start_voting(&ctx, &data, guild_id, 60).await {
+                        error!("Failed to start voting phase: {}", e);
+                    }
+                }
+                LoraxState::Voting { .. } | LoraxState::TieBreaker { .. } => {
+                    if let Err(e) = announce_winner(&ctx.http, &data, guild_id).await {
+                        error!("Failed to announce winner: {}", e);
+                    }
+                }
+                _ => {}
+            }
+        });
+
         Ok(())
     }
 }
