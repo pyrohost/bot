@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TestingServer {
+    pub server_id: String,
+    pub deletion_time: i64,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct GuildSettings {
     pub stats_category: Option<serenity::ChannelId>,
@@ -39,9 +45,21 @@ impl GuildSettings {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserSettings {
     pub modrinth_id: Option<String>,
+    pub testing_servers: Vec<TestingServer>,
+    pub max_testing_servers: u32,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self {
+            modrinth_id: None,
+            testing_servers: Vec::new(),
+            max_testing_servers: 1,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -51,6 +69,7 @@ pub enum LoraxState {
         end_time: i64,
         message_id: serenity::MessageId,
         submissions: HashMap<UserId, String>,
+        location: String,
     },
     Voting {
         end_time: i64,
@@ -58,6 +77,7 @@ pub enum LoraxState {
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
         submissions: HashMap<UserId, String>,
+        location: String,
     },
 }
 
@@ -72,7 +92,7 @@ pub struct Settings {
     pub guilds: HashMap<serenity::GuildId, GuildSettings>,
     #[serde(skip)]
     file_path: PathBuf,
-    user_settings: HashMap<UserId, UserSettings>,
+    pub user_settings: HashMap<UserId, UserSettings>,
 }
 
 impl Default for Settings {

@@ -1,4 +1,5 @@
 pub mod stats_updater;
+pub mod lorax_scheduler;
 
 use async_trait::async_trait;
 use poise::serenity_prelude as serenity;
@@ -10,17 +11,17 @@ pub trait TaskHandler: Send + Sync + 'static {
     async fn run(&mut self, ctx: &serenity::Context, data: Data) -> Result<(), Error>;
 }
 
-pub struct TaskManager<T: TaskHandler> {
-    tasks: Vec<T>,
+pub struct TaskManager {
+    tasks: Vec<Box<dyn TaskHandler>>,
 }
 
-impl<T: TaskHandler> TaskManager<T> {
+impl TaskManager {
     pub fn new() -> Self {
         Self { tasks: Vec::new() }
     }
 
-    pub fn register_task(&mut self, task: T) {
-        self.tasks.push(task);
+    pub fn register_task<T: TaskHandler>(&mut self, task: T) {
+        self.tasks.push(Box::new(task));
     }
 
     pub async fn run_all(self, ctx: &serenity::Context, data: Data) {

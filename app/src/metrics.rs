@@ -127,31 +127,31 @@ pub const METRICS: &[Metric] = &[
     Metric::new(
         "nodes",
         "🖥️",
-        "count(up{job=\"node\"} == 1 and (time() - node_boot_time_seconds) > 300)",
+        "count(up{job=\"node\"} == 1)",
         |v| format!("Active Nodes {:.0}", v),
     ),
     Metric::new(
         "network",
         "🌐",
-        "sum(rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m]))",
+        "sum(rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m])) or vector(0)",
         |v| format!("Net {}/s", format_bytes(v)),
     ),
     Metric::new(
         "network_total",
         "📊",
-        "sum(increase(node_network_receive_bytes_total[30d]) + increase(node_network_transmit_bytes_total[30d]))",
-        |v| format!("30d Total {}", format_large_bytes(v)),
+        "sum(increase(node_network_receive_bytes_total[7d]) + increase(node_network_transmit_bytes_total[7d])) or vector(0)",
+        |v| format!("7d Total {}", format_large_bytes(v)),
     ),
     Metric::new(
         "storage",
         "💾",
-        "sum(node_filesystem_size_bytes - node_filesystem_free_bytes)",
+        "sum(node_filesystem_size_bytes{mountpoint=\"/\"} - node_filesystem_free_bytes{mountpoint=\"/\"})",
         |v| format!("Disk {}", format_bytes(v)),
     ),
     Metric::new(
         "memory",
         "🧠",
-        "sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)",
+        "sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) or vector(0)",
         |v| format!("Mem {}", format_bytes(v)),
     ),
 ];

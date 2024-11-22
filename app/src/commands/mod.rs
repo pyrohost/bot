@@ -1,4 +1,4 @@
 pub mod network;
 pub mod query;
-pub mod user;
+pub mod modrinth;
 pub mod lorax;
