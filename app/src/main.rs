@@ -19,7 +19,7 @@ pub struct Data {
     pub settings: Arc<RwLock<Settings>>,
 }
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 #[tokio::main]

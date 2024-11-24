@@ -10,9 +10,11 @@ use poise::serenity_prelude::{
 };
 use poise::CreateReply;
 use rand::Rng;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+use futures::future::{FutureExt, BoxFuture};
 
 #[poise::command(
     slash_command,
@@ -225,77 +227,78 @@ pub async fn start_voting(
     Ok(())
 }
 
-pub async fn start_tiebreaker(
-    http: &Arc<serenity::Http>,
-    data: &Data,
+pub fn start_tiebreaker(
+    http: Arc<serenity::Http>,
+    data: Data,
     guild_id: serenity::GuildId,
     tied_options: Vec<(usize, String)>,
     location: String,
     round: u32,
     tiebreaker_duration: u64,
-) -> Result<(), Error> {
-    let mut settings = data.settings.write().await;
-    let guild = settings.guilds.get_mut(&guild_id).unwrap();
+) -> BoxFuture<'static, Result<(), Error>> {
+    async move {
+        let mut settings = data.settings.write().await;
+        let guild = settings.guilds.get_mut(&guild_id).unwrap();
 
-    let channel_id = guild.lorax_channel.unwrap();
-    let role_id = guild.lorax_role.unwrap();
+        let channel_id = guild.lorax_channel.unwrap();
+        let role_id = guild.lorax_role.unwrap();
 
-    let end_time = Utc::now().timestamp() + (tiebreaker_duration * 60) as i64;
-    let options: Vec<String> = tied_options.into_iter().map(|(_, name)| name).collect();
+        let end_time = Utc::now().timestamp() + (tiebreaker_duration * 60) as i64;
+        let options: Vec<String> = tied_options.into_iter().map(|(_, name)| name).collect();
 
-    let submissions = match &guild.lorax_state {
-        LoraxState::Voting { submissions, .. } => submissions.clone(),
-        _ => HashMap::new(),
-    };
+        let submissions = match &guild.lorax_state {
+            LoraxState::Voting { submissions, .. } => submissions.clone(),
+            _ => HashMap::new(),
+        };
 
-    let announcement = format!(
-        "🎯 Hey <@&{}>! We've got a tie! Time for tiebreaker round {}!\n\n\
-        The following names are tied:\n{}\n\n\
-        Use `/lorax vote` to break the tie! One name will be eliminated.\n\n\
-        This round ends {}.",
-        role_id,
-        round,
-        options
-            .iter()
-            .map(|name| format!("• `{}`", name))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        discord_timestamp(end_time, TimestampStyle::ShortDateTime)
-    );
+        let announcement = format!(
+            "🎯 Hey <@&{}>! We've got a tie! Time for tiebreaker round {}!\n\n\
+            The following names are tied:\n{}\n\n\
+            Use `/lorax vote` to break the tie! One name will be eliminated.\n\n\
+            This round ends {}.",
+            role_id,
+            round,
+            options
+                .iter()
+                .map(|name| format!("• `{}`", name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            discord_timestamp(end_time, TimestampStyle::ShortDateTime)
+        );
 
-    let announcement_msg = channel_id.say(http, announcement).await?;
+        let announcement_msg = channel_id.say(http.clone(), announcement).await?;
 
-    guild.lorax_state = LoraxState::TieBreaker {
-        end_time,
-        message_id: announcement_msg.id,
-        options: options.clone(),
-        votes: HashMap::new(),
-        location: location.clone(),
-        round,
-        tiebreaker_duration,
-        submissions,
-    };
-    settings.save()?;
-    drop(settings);
+        guild.lorax_state = LoraxState::TieBreaker {
+            end_time,
+            message_id: announcement_msg.id,
+            options: options.clone(),
+            votes: HashMap::new(),
+            location: location.clone(),
+            round,
+            tiebreaker_duration,
+            submissions,
+        };
+        settings.save()?;
 
-    let http = http.clone();
+        let http = http.clone();
 
-    let data = data.clone();
-    
-    // this might not even be neccesary If I fucking do tasks right
-    // ideally task* managers should check application state every x time (likely 1 minute)
-    // and be like, oh there's a running event! how long is it ? and handle it that way
-    // this is just dirty
-    // - ellie
+        let data = data.clone();
+        
+        // this might not even be neccesary If I fucking do tasks right
+        // ideally task* managers should check application state every x time (likely 1 minute)
+        // and be like, oh there's a running event! how long is it ? and handle it that way
+        // this is just dirty
+        // - ellie
 
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_secs(tiebreaker_duration * 60)).await;
-        if let Err(e) = announce_winner(&http, &data, guild_id).await {
-            error!("Failed to announce tiebreaker results: {}", e);
-        }
-    });
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(tiebreaker_duration * 60)).await;
+            if let Err(e) = announce_winner(&http, &data, guild_id).await {
+                error!("Failed to announce tiebreaker results: {}", e);
+            }
+        });
 
-    Ok(())
+        Ok(())
+    }.boxed()
 }
 
 async fn eliminate_random_tree(options: &[String]) -> usize {
@@ -317,7 +320,6 @@ pub async fn announce_winner(
         LoraxState::Voting {
             options,
             votes,
-            submissions,
             location,
             tiebreaker_duration,
             ..
@@ -336,7 +338,7 @@ pub async fn announce_winner(
             }
 
             if vote_counts.is_empty() || options.len() <= 1 {
-                if let Some(winning_tree) = options.get(0) {
+                if let Some(winning_tree) = options.first() {
                     channel_id
                         .say(
                             http,
@@ -398,11 +400,9 @@ pub async fn announce_winner(
                     1
                 };
 
-                drop(settings);
-
                 return start_tiebreaker(
-                    http,
-                    data,
+                    Arc::clone(http),
+                    data.clone(),
                     guild_id,
                     remaining_options,
                     location.clone(),
@@ -605,12 +605,16 @@ pub async fn submit(
             return Ok(());
         }
 
-        let msg = if submissions.contains_key(&user_id) {
-            submissions.insert(user_id, tree_name);
-            "Awesome! I've updated your submission. Good luck! 🌲"
-        } else {
-            submissions.insert(user_id, tree_name);
-            "Thanks for your submission! Good luck! 🌴"
+        let msg = match submissions.entry(user_id) {
+            Entry::Vacant(vacancy) => {
+                vacancy.insert(tree_name);
+                "Awesome! I've updated your submission. Good luck! 🌲"
+            }
+
+            Entry::Occupied(mut occupied) => {
+                occupied.insert(tree_name);
+                "Thanks for your submission! Good luck! 🌴"
+            }
         };
 
         settings.save()?;
@@ -668,7 +672,6 @@ pub async fn vote(
             let mut components = Vec::new();
 
             let select_options = futures::future::join_all(page_options.iter().map(|(i, name)| {
-                let ctx = ctx.clone();
                 let submissions = submissions.clone();
                 async move {
                     let submitter_name = get_submitter_name(
@@ -680,7 +683,7 @@ pub async fn vote(
                         format!("{} - Submitted by {}", name, submitter_name),
                         i.to_string(),
                     )
-                    .default_selection(votes.get(&user_id) == Some(&i))
+                    .default_selection(votes.get(&user_id) == Some(i))
                 }
             }))
             .await;
@@ -854,7 +857,6 @@ pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
         }
         LoraxState::Submissions {
             end_time,
-            submissions,
             location,
             ..
         } => {
@@ -914,7 +916,7 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
                 end_time,
                 ..
             } => {
-                if (!is_admin) {
+                if !is_admin {
                     ctx.say(
                         "Only administrators can view submissions during the submission phase.",
                     )
@@ -924,7 +926,6 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
 
                 let submission_list =
                     futures::future::join_all(submissions.iter().map(|(user_id, name)| {
-                        let ctx = ctx.clone();
                         async move {
                             let submitter_name =
                                 get_submitter_name(ctx.serenity_context(), *user_id).await;
@@ -958,17 +959,15 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
                 options,
                 votes,
                 end_time,
-                submissions,
                 ..
             }
             | LoraxState::TieBreaker {
                 options,
                 votes,
                 end_time,
-                submissions: _,
                 ..
             } => {
-                if (!is_admin) {
+                if !is_admin {
                     let options_list = options
                         .iter()
                         .map(|name| format!("• {}", name))
