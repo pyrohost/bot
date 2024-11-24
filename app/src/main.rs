@@ -10,7 +10,7 @@ use poise::serenity_prelude as serenity;
 use settings::Settings;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tasks::TaskManager;
+use tasks::{server_deletion, TaskManager};
 use tasks::stats_updater::StatsUpdaterTask;
 use tasks::lorax_scheduler::LoraxSchedulerTask;
 
@@ -42,6 +42,7 @@ async fn main() -> Result<(), Error> {
     let mut task_manager = TaskManager::new();
     task_manager.register_task(StatsUpdaterTask::new());
     task_manager.register_task(LoraxSchedulerTask::new());
+    task_manager.register_task(server_deletion::ServerDeletionTask::new());
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {

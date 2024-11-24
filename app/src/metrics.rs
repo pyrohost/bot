@@ -53,7 +53,7 @@ struct PrometheusResult {
     value: (f64, serde_json::Value),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MetricsClient {
     client: Client,
 }

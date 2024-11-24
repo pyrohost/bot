@@ -3,7 +3,7 @@ use chrono::Utc;
 use poise::serenity_prelude as serenity;
 use std::time::Duration;
 use async_trait::async_trait;
-use crate::tasks::TaskHandler;
+use crate::tasks::Task;
 
 pub struct ServerDeletionTask;
 
@@ -14,16 +14,12 @@ impl ServerDeletionTask {
 }
 
 #[async_trait]
-impl TaskHandler for ServerDeletionTask {
-    fn name(&self) -> &'static str {
-        "server_deletion"
-    }
-
-    async fn run(&mut self, _ctx: &serenity::Context, data: Data) -> Result<(), Error> {
-        let master_key = std::env::var("ARCHON_MASTER_KEY").expect("MASTER_KEY not set");
-        let client = reqwest::Client::new();
-
+impl Task for ServerDeletionTask {
+    async fn run(&self, _ctx: &serenity::Context, data: Data) -> Result<(), Error> {
         loop {
+            let master_key = std::env::var("ARCHON_MASTER_KEY").expect("MASTER_KEY not set");
+            let client = reqwest::Client::new();
+
             let now = Utc::now().timestamp();
             let mut servers_to_delete = Vec::new();
 

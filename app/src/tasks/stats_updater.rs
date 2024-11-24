@@ -9,12 +9,12 @@ use crate::{
     Data, Error,
 };
 
-use super::TaskHandler;
+use super::Task;
 
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 5);
 const RATE_LIMIT_DELAY: Duration = Duration::from_secs(1);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChannelUpdater {
     previous_names: HashMap<serenity::ChannelId, String>,
     metrics_client: MetricsClient,
@@ -98,14 +98,11 @@ impl StatsUpdaterTask {
 }
 
 #[async_trait]
-impl TaskHandler for StatsUpdaterTask {
-    fn name(&self) -> &'static str {
-        "stats_updater"
-    }
-
-    async fn run(&mut self, ctx: &serenity::Context, data: Data) -> std::result::Result<(), Error> {
+impl Task for StatsUpdaterTask {
+    async fn run(&self, ctx: &serenity::Context, data: Data) -> Result<(), Error> {
         let mut interval = time::interval(UPDATE_INTERVAL);
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut updater = self.updater.clone();
 
         loop {
             interval.tick().await;
@@ -122,7 +119,7 @@ impl TaskHandler for StatsUpdaterTask {
                     settings.memory_channel,
                 ];
 
-                if let Err(e) = self.updater.update_guild_metrics(ctx, guild_id, &channels).await {
+                if let Err(e) = updater.update_guild_metrics(ctx, guild_id, &channels).await {
                     tracing::error!("Failed to update metrics: {}", e);
                 }
             }

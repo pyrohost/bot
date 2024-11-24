@@ -1,21 +1,24 @@
 use crate::metrics::MetricsClient;
 use crate::settings::LoraxState;
 use crate::{Context, Data, Error};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use poise::serenity_prelude::{
     self as serenity, futures, ButtonStyle, ChannelId, Color, ComponentInteraction,
     CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter,
     CreateInteractionResponseMessage, CreateSelectMenu, CreateSelectMenuKind,
     CreateSelectMenuOption, RoleId,
 };
+use poise::serenity_prelude::{futures::future::BoxFuture, FutureExt};
 use poise::CreateReply;
-use rand::Rng;
+use rand::rngs::{OsRng, StdRng};
+use rand::{SeedableRng, Rng};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
-use futures::future::{FutureExt, BoxFuture};
+use tracing::{debug, info, warn};
+use rand::seq::SliceRandom;
 
+/// Main command for Lorax events, with subcommands for managing the events.
 #[poise::command(
     slash_command,
     subcommands(
@@ -36,6 +39,7 @@ pub async fn lorax(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Sets the channel for Lorax announcements.
 #[poise::command(slash_command, required_permissions = "MANAGE_CHANNELS")]
 pub async fn set_channel(
     ctx: Context<'_>,
@@ -59,6 +63,7 @@ pub async fn set_channel(
     Ok(())
 }
 
+/// Sets the role to ping for Lorax events.
 #[poise::command(slash_command, required_permissions = "MANAGE_ROLES")]
 pub async fn set_role(
     ctx: Context<'_>,
@@ -82,6 +87,7 @@ pub async fn set_role(
     Ok(())
 }
 
+/// Starts a new Lorax event.
 #[poise::command(slash_command, required_permissions = "MANAGE_GUILD")]
 pub async fn start(
     ctx: Context<'_>,
@@ -91,8 +97,8 @@ pub async fn start(
     #[description = "Tiebreaker duration in minutes"] tiebreaker_duration: Option<u64>,
 ) -> Result<(), Error> {
     let submission_duration = submission_duration.unwrap_or(60);
-    let voting_duration = voting_duration.unwrap_or(60);
-    let tiebreaker_duration = tiebreaker_duration.unwrap_or(30);
+    let voting_duration = voting_duration.unwrap_or(30);
+    let tiebreaker_duration = tiebreaker_duration.unwrap_or(15);
     let guild_id = ctx.guild_id().unwrap();
     let data = ctx.data().clone();
 
@@ -125,20 +131,10 @@ pub async fn start(
             message_id: announcement_msg.id,
             submissions: HashMap::new(),
             location,
+            voting_duration,
             tiebreaker_duration,
         };
         settings.save()?;
-
-        let data = ctx.data().clone();
-        let ctx_clone = ctx.serenity_context().clone();
-        tokio::spawn(async move {
-            let seconds = submission_duration as i64 * 60;
-            tokio::time::sleep(Duration::seconds(seconds).to_std().unwrap()).await;
-
-            if let Err(e) = start_voting(&ctx_clone, &data, guild_id, voting_duration).await {
-                tracing::error!("Failed to start voting: {}", e);
-            }
-        });
 
         ctx.say("🎉 Lorax event started! Submissions are now open.")
             .await?;
@@ -153,7 +149,6 @@ pub async fn start_voting(
     ctx: &serenity::Context,
     data: &Data,
     guild_id: serenity::GuildId,
-    voting_duration: u64,
 ) -> Result<(), Error> {
     let mut settings = data.settings.write().await;
     let state = &settings.guilds.get(&guild_id).unwrap().lorax_state;
@@ -169,6 +164,7 @@ pub async fn start_voting(
     if let LoraxState::Submissions {
         submissions,
         location,
+        voting_duration,
         tiebreaker_duration,
         ..
     } = state
@@ -185,6 +181,7 @@ pub async fn start_voting(
             return Ok(());
         }
 
+        // Use voting_duration instead of hardcoded value
         let end_time = Utc::now().timestamp() + (voting_duration * 60) as i64;
         let options = submissions.values().cloned().collect::<Vec<_>>();
         let submission_count = options.len();
@@ -201,9 +198,56 @@ pub async fn start_voting(
 
         let announcement_msg = channel_id.say(ctx, announcement).await?;
 
+        // Create campaign thread
+        let thread = channel_id.create_thread(
+            ctx,
+            serenity::CreateThread::new("🗳️ Tree Name Campaign Thread")
+                .kind(serenity::ChannelType::PublicThread)
+                .auto_archive_duration(serenity::AutoArchiveDuration::OneDay)
+        )
+        .await?;
+
+        // Send initial thread message
+        thread.id.send_message(
+            ctx, 
+            serenity::CreateMessage::new()
+                .content("🌳 Welcome to the campaign thread! This is where submitters can advocate for their tree names and voters can discuss the options.")
+        ).await?;
+
+        let representatives = {
+            let mut rng = StdRng::from_rng(OsRng)?;
+            let mut submitter_list: Vec<_> = submissions.iter().collect();
+            submitter_list.shuffle(&mut rng);
+            submitter_list.into_iter().take(5).collect::<Vec<_>>()
+        };
+
+        // Send initial thread message with random representatives
+        let reps = futures::future::join_all(representatives.iter().map(|(user_id, tree)| async move {
+            let _name = get_submitter_name(ctx, **user_id).await;
+            format!("🗣️ <@{}> representing `{}`", user_id, tree)
+        })).await.join("\n");
+
+        let campaign_msg = if !representatives.is_empty() {
+            format!(
+                "🌳 Welcome to the Tree Name Campaign Thread!\n\n\
+                Here, submitters can advocate for their tree names and voters can discuss the options.\n\n\
+                Some of our candidates speaking today:\n{}\n\n\
+                May the best tree win! 🎉",
+                reps
+            )
+        } else {
+            "🌳 Welcome to the Tree Name Campaign Thread! This is where submitters can advocate for their tree names and voters can discuss the options.".to_string()
+        };
+
+        thread.id.send_message(
+            ctx, 
+            serenity::CreateMessage::new().content(campaign_msg)
+        ).await?;
+
         settings.guilds.get_mut(&guild_id).unwrap().lorax_state = LoraxState::Voting {
             end_time,
             message_id: announcement_msg.id,
+            thread_id: Some(thread.id),  // Store thread ID
             options,
             votes: HashMap::new(),
 
@@ -212,16 +256,6 @@ pub async fn start_voting(
             tiebreaker_duration: *tiebreaker_duration,
         };
         settings.save()?;
-
-        let data_clone = data.clone();
-        let ctx_clone = ctx.clone();
-        tokio::spawn(async move {
-            let seconds = voting_duration as i64 * 60;
-            tokio::time::sleep(Duration::seconds(seconds).to_std().unwrap()).await;
-            if let Err(e) = announce_winner(&ctx_clone.http, &data_clone, guild_id).await {
-                tracing::error!("Failed to announce winner: {}", e);
-            }
-        });
     }
 
     Ok(())
@@ -244,6 +278,9 @@ pub fn start_tiebreaker(
         let role_id = guild.lorax_role.unwrap();
 
         let end_time = Utc::now().timestamp() + (tiebreaker_duration * 60) as i64;
+        
+        // Clone tied_options before consuming it
+        let tied_options_clone = tied_options.clone();
         let options: Vec<String> = tied_options.into_iter().map(|(_, name)| name).collect();
 
         let submissions = match &guild.lorax_state {
@@ -268,9 +305,17 @@ pub fn start_tiebreaker(
 
         let announcement_msg = channel_id.say(http.clone(), announcement).await?;
 
+        // Get existing thread ID if any
+        let thread_id = match &guild.lorax_state {
+            LoraxState::Voting { thread_id, .. } => *thread_id,
+            LoraxState::TieBreaker { thread_id, .. } => *thread_id,
+            _ => None,
+        };
+
         guild.lorax_state = LoraxState::TieBreaker {
             end_time,
             message_id: announcement_msg.id,
+            thread_id,  // Preserve the thread
             options: options.clone(),
             votes: HashMap::new(),
             location: location.clone(),
@@ -280,30 +325,30 @@ pub fn start_tiebreaker(
         };
         settings.save()?;
 
-        let http = http.clone();
+        // If there's a thread, announce the tiebreaker there too
+        if let Some(thread_id) = thread_id {
+            let _ = thread_id.send_message(
+                http,
+                serenity::CreateMessage::new()
+                    .content(format!(
+                        "🎯 We're headed to tiebreaker round {}! The following names are tied:\n{}\n\nUse `/lorax vote` to help break the tie!",
+                        round,
+                        options
+                            .iter()
+                            .map(|name| format!("• `{}`", name))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ))
+            ).await;
+        }
 
-        let data = data.clone();
-        
-        // this might not even be neccesary If I fucking do tasks right
-        // ideally task* managers should check application state every x time (likely 1 minute)
-        // and be like, oh there's a running event! how long is it ? and handle it that way
-        // this is just dirty
-        // - ellie
-
-        tokio::spawn(async move {
-            tokio::time::sleep(tokio::time::Duration::from_secs(tiebreaker_duration * 60)).await;
-            if let Err(e) = announce_winner(&http, &data, guild_id).await {
-                error!("Failed to announce tiebreaker results: {}", e);
-            }
-        });
+        // Use OsRng for thread-safe random number generation
+        let mut rng = StdRng::from_rng(OsRng)?;
+        let _remove_idx = rng.gen_range(0..tied_options_clone.len());
+        // Note: The actual elimination logic should go here if needed
 
         Ok(())
     }.boxed()
-}
-
-async fn eliminate_random_tree(options: &[String]) -> usize {
-    let mut rng = rand::thread_rng();
-    rng.gen_range(0..options.len())
 }
 
 pub async fn announce_winner(
@@ -314,7 +359,25 @@ pub async fn announce_winner(
     let mut settings = data.settings.write().await;
     let guild = settings.guilds.get_mut(&guild_id).unwrap();
     let channel_id = guild.lorax_channel.unwrap();
+    let role_id = guild.lorax_role.unwrap();
     let state = guild.lorax_state.clone();
+
+    // Track if we need to close a thread
+    let mut thread_to_close = None;
+
+    match state {
+        LoraxState::Voting {
+            thread_id,
+            ..
+        }
+        | LoraxState::TieBreaker {
+            thread_id,
+            ..
+        } => {
+            thread_to_close = thread_id;
+        }
+        _ => {}
+    }
 
     match state {
         LoraxState::Voting {
@@ -322,14 +385,15 @@ pub async fn announce_winner(
             votes,
             location,
             tiebreaker_duration,
+            submissions,
             ..
         }
         | LoraxState::TieBreaker {
             options,
             votes,
             location,
-            round: _,
             tiebreaker_duration,
+            submissions,
             ..
         } => {
             let mut vote_counts: HashMap<usize, usize> = HashMap::new();
@@ -339,12 +403,17 @@ pub async fn announce_winner(
 
             if vote_counts.is_empty() || options.len() <= 1 {
                 if let Some(winning_tree) = options.first() {
+                    let submitter = submissions.iter()
+                        .find(|(_, name)| *name == winning_tree)
+                        .map(|(user_id, _)| *user_id)
+                        .unwrap();
+
                     channel_id
                         .say(
                             http,
                             format!(
-                                "🎉 The winning tree name is **{}**! This will be the name for our new **{}** node. Thank you all for participating!",
-                                winning_tree, location
+                                "Hey <@&{}>! 🎉 The winning tree name is **{}** (submitted by <@{}>)! This will be the name for our new **{}** node.\n\nThank you all for participating!",
+                                role_id, winning_tree, submitter, location
                             ),
                         )
                         .await?;
@@ -365,60 +434,99 @@ pub async fn announce_winner(
                 return Ok(());
             }
 
-            let max_votes = vote_counts.values().max().unwrap_or(&0);
+            // Get sorted list of all entries by votes
+            let mut options_with_votes: Vec<_> = options
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| {
+                    let vote_count = vote_counts.get(&idx).unwrap_or(&0);
+                    let submitter = submissions.iter()
+                        .find(|(_, n)| *n == name)
+                        .map(|(user_id, _)| *user_id)
+                        .unwrap();
+                    (name.clone(), *vote_count, submitter)
+                })
+                .collect();
+            options_with_votes.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let max_votes = options_with_votes.first().map(|(_, votes, _)| *votes).unwrap_or(0);
             let tied_options: Vec<(usize, String)> = options
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| vote_counts.get(i).unwrap_or(&0) == max_votes)
+                .filter(|(i, _)| vote_counts.get(i).unwrap_or(&0) == &max_votes)
                 .map(|(i, name)| (i, name.clone()))
                 .collect();
 
             if tied_options.len() > 1 {
-                let min_votes = vote_counts.values().min().unwrap_or(&0);
-                let lowest_options: Vec<usize> = options
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| vote_counts.get(i).unwrap_or(&0) == min_votes)
-                    .map(|(i, _)| i)
-                    .collect();
-
-                let remove_idx = {
-                    let mut rng = rand::thread_rng();
-                    lowest_options[rng.gen_range(0..lowest_options.len())]
+                let round = match guild.lorax_state {
+                    LoraxState::TieBreaker { round, .. } => round + 1,
+                    _ => 1,
                 };
 
-                let remaining_options: Vec<(usize, String)> = options
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != remove_idx)
-                    .map(|(i, name)| (i, name.clone()))
-                    .collect();
+                let tied_names = tied_options.iter()
+                    .map(|(_, name)| {
+                        let submitter = submissions.iter()
+                            .find(|(_, n)| *n == name)
+                            .map(|(user_id, _)| *user_id)
+                            .unwrap();
+                        format!("`{}` (by <@{}>)", name, submitter)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
 
-                let round = if let LoraxState::TieBreaker { round, .. } = guild.lorax_state {
-                    round + 1
-                } else {
-                    1
-                };
-
-                return start_tiebreaker(
-                    Arc::clone(http),
-                    data.clone(),
-                    guild_id,
-                    remaining_options,
-                    location.clone(),
-                    round,
-                    tiebreaker_duration,
-                )
-                .await;
-            }
-
-            if let Some((_, winning_tree)) = tied_options.first() {
                 channel_id
                     .say(
                         http,
                         format!(
-                            "🎉 The winning tree name is **{}**! This will be the name for our new **{}** node. Thank you all for participating!",
-                            winning_tree, location
+                            "Hey <@&{}>! We've got a tie between {}! Time for tiebreaker round {}!\n\nUse `/lorax vote` to break the tie!",
+                            role_id, tied_names, round
+                        ),
+                    )
+                    .await?;
+
+                start_tiebreaker(
+                    http.clone(),
+                    data.clone(),
+                    guild_id,
+                    tied_options,
+                    location.clone(),
+                    round,
+                    tiebreaker_duration,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            if let Some((winning_tree, winning_votes, submitter)) = options_with_votes.first() {
+                let top_entries = if options_with_votes.len() > 1 {
+                    let runners_up = options_with_votes[1..].iter()
+                        .take(2)
+                        .map(|(name, votes, user_id)| {
+                            format!("`{}` by <@{}> ({} votes)", name, user_id, votes)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    let remaining = if options_with_votes.len() > 3 {
+                        format!("\n\n...and {} more entries!", options_with_votes.len() - 3)
+                    } else {
+                        String::new()
+                    };
+
+                    format!(
+                        "\n\nTop entries:\n🥇 `{}` by <@{}> ({} votes)\n🥈 {}{}",
+                        winning_tree, submitter, winning_votes, runners_up, remaining
+                    )
+                } else {
+                    String::new()
+                };
+
+                channel_id
+                    .say(
+                        http,
+                        format!(
+                            "Hey <@&{}>! 🎉 The winning tree name is **{}**! This will be the name for our new **{}** node.{}",
+                            role_id, winning_tree, location, top_entries
                         ),
                     )
                     .await?;
@@ -430,6 +538,16 @@ pub async fn announce_winner(
         _ => {}
     }
 
+    // After announcing winner or if no valid options remain, close the thread
+    if let Some(thread_id) = thread_to_close {
+        if let Err(e) = thread_id.edit_thread(
+            http,
+            serenity::EditThread::new().archived(true).locked(true),
+        ).await {
+            warn!("Failed to close campaign thread: {}", e);
+        }
+    }
+
     Ok(())
 }
 
@@ -438,25 +556,15 @@ fn discord_timestamp(time: i64, style: TimestampStyle) -> String {
 }
 
 enum TimestampStyle {
-    ShortTime,
-    LongTime,
-    ShortDate,
-    LongDate,
     ShortDateTime,
-    LongDateTime,
     Relative,
 }
 
 impl TimestampStyle {
-    fn as_str(&self) -> &'static str {
+    fn as_str(&self) -> &str {
         match self {
-            Self::ShortTime => "t",
-            Self::LongTime => "T",
-            Self::ShortDate => "d",
-            Self::LongDate => "D",
-            Self::ShortDateTime => "f",
-            Self::LongDateTime => "F",
-            Self::Relative => "R",
+            TimestampStyle::ShortDateTime => "f",
+            TimestampStyle::Relative => "R",
         }
     }
 }
@@ -478,6 +586,7 @@ fn validate_tree_name(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Cancels the current Lorax event.
 #[poise::command(slash_command, required_permissions = "MANAGE_GUILD")]
 pub async fn cancel(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
@@ -510,21 +619,37 @@ pub async fn cancel(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Adjusts the duration of the current Lorax event phase.
 #[poise::command(slash_command, required_permissions = "MANAGE_GUILD")]
 pub async fn duration(
     ctx: Context<'_>,
     #[description = "Minutes to adjust (positive to extend, negative to reduce)"] minutes: i64,
 ) -> Result<(), Error> {
+    duration_impl(ctx, minutes).await
+}
+
+async fn duration_impl(
+    ctx: Context<'_>,
+    minutes: i64,
+) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let mut settings = ctx.data().settings.write().await;
+    let guild = settings.guilds.get_mut(&guild_id).unwrap();
 
-    match &mut settings.guilds.get_mut(&guild_id).unwrap().lorax_state {
+    // Extract the needed data before match statement to avoid borrow conflicts
+    let channel_id = guild.lorax_channel.unwrap();
+    let thread_id = match &guild.lorax_state {
+        LoraxState::Voting { thread_id, .. } | LoraxState::TieBreaker { thread_id, .. } => *thread_id,
+        _ => None,
+    };
+
+    match &mut guild.lorax_state {
         LoraxState::Idle => {
             ctx.say("No active Lorax event to modify.").await?;
         }
-        LoraxState::Submissions { end_time, .. }
-        | LoraxState::Voting { end_time, .. }
-        | LoraxState::TieBreaker { end_time, .. } => {
+        LoraxState::Submissions { end_time, message_id, .. }
+        | LoraxState::Voting { end_time, message_id, .. }
+        | LoraxState::TieBreaker { end_time, message_id, .. } => {
             let current_time = Utc::now().timestamp();
             let new_end = *end_time + (minutes * 60);
 
@@ -536,42 +661,71 @@ pub async fn duration(
                 return Ok(());
             }
 
+            let msg_id = *message_id;
+            
+            // Update the end time
             *end_time = new_end;
 
-            let channel = settings.guilds.get(&guild_id).unwrap().lorax_channel;
-            drop(settings);
+            // Save state changes
+            settings.save()?;
+            drop(settings);  // Drop settings early to avoid borrowing conflicts
 
-            if let Some(channel_id) = channel {
-                let message = if minutes > 0 {
-                    format!(
-                        "⏰ The current phase has been extended by {} minutes! More time to get involved.",
-                        minutes
-                    )
-                } else {
-                    format!(
-                        "⏰ The current phase has been shortened by {} minutes. Don't miss out!",
-                        minutes.abs()
-                    )
-                };
-
-                channel_id
-                    .say(
-                        &ctx,
-                        format!(
-                            "{} New end time: {}",
-                            message,
-                            discord_timestamp(new_end, TimestampStyle::ShortDateTime)
-                        ),
-                    )
-                    .await?;
-
-                ctx.say("Got it! The duration has been updated. 📅").await?;
+            // Edit the original announcement message
+            if let Ok(mut msg) = channel_id.message(&ctx, msg_id).await {
+                let new_content = msg.content.clone()
+                    .replace(
+                        &msg.content.rsplit("<t:").nth(0).unwrap_or("")
+                            .rsplit_once(">").map(|(_, rest)| rest).unwrap_or(""),
+                        &format!("\nVoting ends {}.", discord_timestamp(new_end, TimestampStyle::ShortDateTime))
+                    );
+                
+                if let Err(e) = msg.edit(&ctx, serenity::EditMessage::new().content(new_content)).await {
+                    warn!("Failed to edit announcement message: {}", e);
+                }
             }
+
+            // Send notification message
+            let message = if minutes > 0 {
+                format!(
+                    "⏰ The current phase has been extended by {} minutes! More time to get involved.",
+                    minutes
+                )
+            } else {
+                format!(
+                    "⏰ The current phase has been shortened by {} minutes. Don't miss out!",
+                    minutes.abs()
+                )
+            };
+
+            channel_id
+                .say(
+                    &ctx,
+                    format!(
+                        "{} New end time: {}",
+                        message,
+                        discord_timestamp(new_end, TimestampStyle::ShortDateTime)
+                    ),
+                )
+                .await?;
+
+            // Also post in campaign thread if we're in voting phase
+            if let Some(thread_id) = thread_id {
+                let _ = thread_id.send_message(
+                    &ctx,
+                    serenity::CreateMessage::new().content(format!(
+                        "⏰ Voting duration has been adjusted! New end time: {}",
+                        discord_timestamp(new_end, TimestampStyle::ShortDateTime)
+                    ))
+                ).await;
+            }
+
+            ctx.say("Got it! The duration has been updated. 📅").await?;
         }
     }
     Ok(())
 }
 
+/// Submits a tree name suggestion.
 #[poise::command(slash_command, ephemeral)]
 pub async fn submit(
     ctx: Context<'_>,
@@ -626,6 +780,7 @@ pub async fn submit(
     Ok(())
 }
 
+/// Votes for a tree name.
 #[poise::command(slash_command, ephemeral)]
 pub async fn vote(
     ctx: Context<'_>,
@@ -641,6 +796,13 @@ pub async fn vote(
 
     if let Some(guild) = settings.guilds.get(&guild_id) {
         if let LoraxState::Voting {
+            options,
+            votes,
+            end_time,
+            submissions,
+            ..
+        }
+        | LoraxState::TieBreaker {
             options,
             votes,
             end_time,
@@ -790,35 +952,31 @@ pub async fn handle_button(
                 if let LoraxState::Voting {
                     votes,
                     options,
-                    end_time,
                     submissions,
+                    end_time,
+                    ..
+                }
+                | LoraxState::TieBreaker {
+                    votes,
+                    options,
+                    submissions,
+                    end_time,
                     ..
                 } = &mut guild.lorax_state
                 {
                     if Utc::now().timestamp() > *end_time {
-                        info!("Rejecting vote: voting period ended");
-                        return Ok(());
-                    }
-
-                    if let Some(selected_tree) = options.get(choice).cloned() {
-                        if let Some((submitter_id, _)) =
-                            submissions.iter().find(|(_, tree)| *tree == &selected_tree)
+                        "Voting period has ended.".to_string()
+                    } else if let Some(selected_tree) = options.get(choice).cloned() {
+                        if let Some((submitter_id, _)) = submissions
+                            .iter()
+                            .find(|(_, tree)| **tree == selected_tree)
                         {
                             if *submitter_id == user_id {
-                                debug!("User {} attempted to vote for own submission", user_id);
                                 "You can't vote for your own submission!".to_string()
                             } else {
-                                let previous_vote = votes.insert(user_id, choice);
+                                votes.insert(user_id, choice);
                                 settings.save()?;
-
-                                if previous_vote.is_some() {
-                                    format!(
-                                        "👍 Got it! You've changed your vote to `{}`.",
-                                        selected_tree
-                                    )
-                                } else {
-                                    format!("👍 Thanks! You've voted for `{}`.", selected_tree)
-                                }
+                                format!("Your vote for `{}` has been recorded!", selected_tree)
                             }
                         } else {
                             "Invalid selection".to_string()
@@ -845,58 +1003,7 @@ pub async fn handle_button(
     Ok(())
 }
 
-#[poise::command(slash_command)]
-pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
-    let guild_id = ctx.guild_id().unwrap();
-    let settings = ctx.data().settings.read().await;
-    let guild_settings = settings.get_guild_settings(guild_id);
-
-    let status_msg = match &guild_settings.lorax_state {
-        LoraxState::Idle => {
-            "🌳 No naming event running right now. Start one with `/lorax start` and let's find a name for our next node!".to_string()
-        }
-        LoraxState::Submissions {
-            end_time,
-            location,
-            ..
-        } => {
-            format!(
-                "🌱 We're naming our new **{}** node!\n\nGot a great idea? Submit it with `/lorax submit` before {}!",
-                location,
-                discord_timestamp(*end_time, TimestampStyle::Relative),
-            )
-        }
-        LoraxState::Voting {
-            end_time,
-            options,
-            votes,
-            location,
-            ..
-        } => {
-            format!(
-                "🗳️ Voting is underway for our **{}** node's name!\n\nWe've got {} great options, and {} votes so far.\n\nUse `/lorax vote` to have your say before {}!",
-                location,
-                options.len(),
-                votes.len(),
-                discord_timestamp(*end_time, TimestampStyle::Relative),
-            )
-        }
-        LoraxState::TieBreaker { end_time, options, votes, location, round, .. } => {
-            format!(
-                "🎯 Tiebreaker Round {} is underway for our **{}** node!\n\n{} options remain, with {} votes cast.\n\nUse `/lorax vote` to break the tie before {}!",
-                round,
-                location,
-                options.len(),
-                votes.len(),
-                discord_timestamp(*end_time, TimestampStyle::Relative),
-            )
-        }
-    };
-
-    ctx.say(status_msg).await?;
-    Ok(())
-}
-
+/// Lists the current submissions or voting status.
 #[poise::command(slash_command, required_permissions = "MANAGE_GUILD", ephemeral)]
 pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
@@ -1040,6 +1147,7 @@ pub async fn list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Removes a tree name submission.
 #[poise::command(slash_command, required_permissions = "MANAGE_MESSAGES")]
 pub async fn remove(
     ctx: Context<'_>,
@@ -1135,6 +1243,7 @@ pub async fn remove(
     Ok(())
 }
 
+/// Forces the current Lorax event phase to end early.
 #[poise::command(slash_command, required_permissions = "MANAGE_GUILD")]
 pub async fn force_end(
     ctx: Context<'_>,
@@ -1158,7 +1267,7 @@ pub async fn force_end(
             ctx.say(&msg).await?;
 
             info!("Force ending submission phase for guild {}", guild_id);
-            start_voting(&serenity_ctx, &data, guild_id, 60).await?;
+            start_voting(&serenity_ctx, &data, guild_id).await?;
         }
         LoraxState::Voting { .. } | LoraxState::TieBreaker { .. } => {
             let msg = if let Some(reason) = reason {
@@ -1176,5 +1285,58 @@ pub async fn force_end(
         }
     }
 
+    Ok(())
+}
+
+/// Displays the current status of the Lorax event.
+#[poise::command(slash_command)]
+pub async fn status(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx.guild_id().unwrap();
+    let settings = ctx.data().settings.read().await;
+    let guild_settings = settings.get_guild_settings(guild_id);
+
+    let status_msg = match &guild_settings.lorax_state {
+        LoraxState::Idle => {
+            "🌳 No naming event running right now. Start one with `/lorax start` and let's find a name for our next node!".to_string()
+        }
+        LoraxState::Submissions {
+            end_time,
+            location,
+            ..
+        } => {
+            format!(
+                "🌱 We're naming our new **{}** node!\n\nGot a great idea? Submit it with `/lorax submit` before {}!",
+                location,
+                discord_timestamp(*end_time, TimestampStyle::Relative),
+            )
+        }
+        LoraxState::Voting {
+            end_time,
+            options,
+            votes,
+            location,
+            ..
+        } => {
+            format!(
+                "🗳️ Voting is underway for our **{}** node's name!\n\nWe've got {} great options, and {} votes so far.\n\nUse `/lorax vote` to have your say before {}!",
+                location,
+                options.len(),
+                votes.len(),
+                discord_timestamp(*end_time, TimestampStyle::Relative),
+            )
+        }
+        LoraxState::TieBreaker { end_time, options, votes, location, round, .. } => {
+            format!(
+                "🎯 Tiebreaker Round {} is underway for our **{}** node!\n\n{} options remain, with {} votes cast.\n\nUse `/lorax vote` to break the tie before {}!",
+                round,
+                location,
+                options.len(),
+                votes.len(),
+                discord_timestamp(*end_time, TimestampStyle::Relative),
+            )
+        }
+    };
+
+    ctx.say(status_msg).await?;
     Ok(())
 }

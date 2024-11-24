@@ -70,11 +70,13 @@ pub enum LoraxState {
         message_id: serenity::MessageId,
         submissions: HashMap<UserId, String>,
         location: String,
+        voting_duration: u64,        // Add this field
         tiebreaker_duration: u64,
     },
     Voting {
         end_time: i64,
         message_id: serenity::MessageId,
+        thread_id: Option<serenity::ChannelId>,  // Add this
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
         submissions: HashMap<UserId, String>,
@@ -84,18 +86,19 @@ pub enum LoraxState {
     TieBreaker {
         end_time: i64,
         message_id: serenity::MessageId,
+        thread_id: Option<serenity::ChannelId>,  // Add this
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
         location: String,
         round: u32,
         tiebreaker_duration: u64,
-        submissions: HashMap<UserId, String>, // Added this field
+        submissions: HashMap<UserId, String>,
     },
 }
 
 impl Default for LoraxState {
     fn default() -> Self {
-        Self::Idle
+        LoraxState::Idle
     }
 }
 

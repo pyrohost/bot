@@ -1,4 +1,4 @@
-use crate::{tasks::TaskManager, Data, Error};
+use crate::{Data, Error};  
 use poise::serenity_prelude::{self as serenity, ActivityData, Interaction, OnlineStatus};
 use tracing::info;
 
@@ -6,7 +6,7 @@ pub async fn event_handler(
     ctx: &serenity::Context,
     event: &serenity::FullEvent,
     framework: poise::FrameworkContext<'_, Data, Error>,
-    data: &Data,
+    _data: &Data,
 ) -> Result<(), Error> {
     match event {
         serenity::FullEvent::Ready { .. } => {
@@ -16,12 +16,7 @@ pub async fn event_handler(
                 OnlineStatus::Idle,
             );
 
-            let ctx = ctx.clone();
-            let data = data.clone();
-
-            let mut task_manager = TaskManager::new();
-            task_manager.register_task(crate::tasks::stats_updater::StatsUpdaterTask::new());
-            task_manager.run_all(&ctx, data).await;
+            
         }
         serenity::FullEvent::InteractionCreate {
             interaction: Interaction::Component(component),
