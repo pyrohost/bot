@@ -9,10 +9,10 @@ use events::event_handler;
 use poise::serenity_prelude as serenity;
 use settings::Settings;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tasks::{server_deletion, TaskManager};
-use tasks::stats_updater::StatsUpdaterTask;
 use tasks::lorax_scheduler::LoraxSchedulerTask;
+use tasks::stats_updater::StatsUpdaterTask;
+use tasks::{server_deletion, TaskManager};
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct Data {
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Error> {
         | serenity::GatewayIntents::GUILD_MEMBERS;
 
     let settings = Arc::new(RwLock::new(Settings::load()?));
-    
+
     let mut task_manager = TaskManager::new();
     task_manager.register_task(StatsUpdaterTask::new());
     task_manager.register_task(LoraxSchedulerTask::new());
@@ -51,6 +51,7 @@ async fn main() -> Result<(), Error> {
                 commands::modrinth::modrinth(),
                 commands::query::query(),
                 commands::network::setup_stats(),
+                commands::levels::levels(),
             ],
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
@@ -60,11 +61,13 @@ async fn main() -> Result<(), Error> {
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                let data = Data { settings: settings.clone() };
-                
+                let data = Data {
+                    settings: settings.clone(),
+                };
+
                 // Run tasks after framework setup
                 task_manager.run_all(ctx, data.clone()).await;
-                
+
                 Ok(data)
             })
         })
