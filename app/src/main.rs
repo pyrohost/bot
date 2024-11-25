@@ -8,6 +8,7 @@ mod tasks;
 use events::event_handler;
 use poise::serenity_prelude as serenity;
 use settings::Settings;
+use sqlx::SqlitePool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tasks::{server_deletion, TaskManager};
@@ -17,6 +18,7 @@ use tasks::lorax_scheduler::LoraxSchedulerTask;
 #[derive(Clone)]
 pub struct Data {
     pub settings: Arc<RwLock<Settings>>,
+    pub pool: Arc<SqlitePool>,
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -37,12 +39,19 @@ async fn main() -> Result<(), Error> {
         | serenity::GatewayIntents::MESSAGE_CONTENT
         | serenity::GatewayIntents::GUILD_MEMBERS;
 
-    let settings = Arc::new(RwLock::new(Settings::load()?));
-    
+
     let mut task_manager = TaskManager::new();
     task_manager.register_task(StatsUpdaterTask::new());
     task_manager.register_task(LoraxSchedulerTask::new());
     task_manager.register_task(server_deletion::ServerDeletionTask::new());
+
+    // Create and migrate the Sqlite DB.
+    // SeaORM made me want to kill myself.
+    let pool = SqlitePool::connect("sqlite://db.sqlite?mode=rwc").await?;
+    sqlx::migrate!("../migrations").run(&pool).await?;
+
+    let settings = Arc::new(RwLock::new(Settings::load(&pool).await?));
+    let pool_arc = Arc::new(pool);
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -60,7 +69,7 @@ async fn main() -> Result<(), Error> {
         .setup(|ctx, _ready, framework| {
             Box::pin(async move {
                 poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                let data = Data { settings: settings.clone() };
+                let data = Data { settings, pool: pool_arc };
                 
                 // Run tasks after framework setup
                 task_manager.run_all(ctx, data.clone()).await;

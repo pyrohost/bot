@@ -46,12 +46,14 @@ pub async fn set_channel(
     #[description = "Channel for node naming announcements"] channel: ChannelId,
 ) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
+    let pool = Arc::clone(&ctx.data().pool);
+
     {
         let mut settings = ctx.data().settings.write().await;
         let mut guild_settings = settings.get_guild_settings(guild_id);
         guild_settings.lorax_channel = Some(channel);
         settings.set_guild_settings(guild_id, guild_settings);
-        settings.save()?;
+        settings.save(&pool).await?;
     }
 
     ctx.say(format!(
@@ -70,12 +72,14 @@ pub async fn set_role(
     #[description = "Role to ping for node naming events"] role: RoleId,
 ) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
+    let pool = Arc::clone(&ctx.data().pool);
+
     {
         let mut settings = ctx.data().settings.write().await;
         let mut guild_settings = settings.get_guild_settings(guild_id);
         guild_settings.lorax_role = Some(role);
         settings.set_guild_settings(guild_id, guild_settings);
-        settings.save()?;
+        settings.save(&pool).await?;
     }
 
     ctx.say(format!(
@@ -103,6 +107,7 @@ pub async fn start(
     let data = ctx.data().clone();
 
     let mut settings = data.settings.write().await;
+    let pool = data.pool;
     let guild_settings = settings.get_guild_settings(guild_id);
 
     if guild_settings.lorax_channel.is_none() || guild_settings.lorax_role.is_none() {
@@ -134,7 +139,7 @@ pub async fn start(
             voting_duration,
             tiebreaker_duration,
         };
-        settings.save()?;
+        settings.save(&pool).await?;
 
         ctx.say("🎉 Lorax event started! Submissions are now open.")
             .await?;
@@ -151,6 +156,7 @@ pub async fn start_voting(
     guild_id: serenity::GuildId,
 ) -> Result<(), Error> {
     let mut settings = data.settings.write().await;
+    let pool = Arc::clone(&data.pool);
     let state = &settings.guilds.get(&guild_id).unwrap().lorax_state;
 
     let channel_id = settings
@@ -177,7 +183,7 @@ pub async fn start_voting(
                 )
                 .await?;
             settings.guilds.get_mut(&guild_id).unwrap().lorax_state = LoraxState::Idle;
-            settings.save()?;
+            settings.save(&pool).await?;
             return Ok(());
         }
 
@@ -255,7 +261,7 @@ pub async fn start_voting(
             location: location.clone(),
             tiebreaker_duration: *tiebreaker_duration,
         };
-        settings.save()?;
+        settings.save(&pool).await?;
     }
 
     Ok(())
@@ -272,6 +278,7 @@ pub fn start_tiebreaker(
 ) -> BoxFuture<'static, Result<(), Error>> {
     async move {
         let mut settings = data.settings.write().await;
+        let pool = Arc::clone(&data.pool);
         let guild = settings.guilds.get_mut(&guild_id).unwrap();
 
         let channel_id = guild.lorax_channel.unwrap();
@@ -323,7 +330,7 @@ pub fn start_tiebreaker(
             tiebreaker_duration,
             submissions,
         };
-        settings.save()?;
+        settings.save(&pool).await?;
 
         // If there's a thread, announce the tiebreaker there too
         if let Some(thread_id) = thread_id {
@@ -357,6 +364,7 @@ pub async fn announce_winner(
     guild_id: serenity::GuildId,
 ) -> Result<(), Error> {
     let mut settings = data.settings.write().await;
+    let pool = Arc::clone(&data.pool);
     let guild = settings.guilds.get_mut(&guild_id).unwrap();
     let channel_id = guild.lorax_channel.unwrap();
     let role_id = guild.lorax_role.unwrap();
@@ -419,7 +427,7 @@ pub async fn announce_winner(
                         .await?;
 
                     guild.lorax_state = LoraxState::Idle;
-                    settings.save()?;
+                    settings.save(&pool).await?;
                 } else {
                     channel_id
                         .say(
@@ -429,7 +437,7 @@ pub async fn announce_winner(
                         .await?;
 
                     guild.lorax_state = LoraxState::Idle;
-                    settings.save()?;
+                    settings.save(&pool).await?;
                 }
                 return Ok(());
             }
@@ -532,7 +540,7 @@ pub async fn announce_winner(
                     .await?;
 
                 guild.lorax_state = LoraxState::Idle;
-                settings.save()?;
+                settings.save(&pool).await?;
             }
         }
         _ => {}
@@ -591,6 +599,7 @@ fn validate_tree_name(name: &str) -> Result<(), &'static str> {
 pub async fn cancel(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let mut settings = ctx.data().settings.write().await;
+    let pool = Arc::clone(&ctx.data().pool);
 
     match &settings.guilds.get(&guild_id).unwrap().lorax_state {
         LoraxState::Idle => {
@@ -611,7 +620,7 @@ pub async fn cancel(ctx: Context<'_>) -> Result<(), Error> {
                 )
                 .await?;
             settings.guilds.get_mut(&guild_id).unwrap().lorax_state = LoraxState::Idle;
-            settings.save()?;
+            settings.save(&pool).await?;
             ctx.say("Alright, the current Lorax event has been cancelled and reset. 🛑")
                 .await?;
         }
@@ -634,6 +643,7 @@ async fn duration_impl(
 ) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let mut settings = ctx.data().settings.write().await;
+    let pool = Arc::clone(&ctx.data().pool);
     let guild = settings.guilds.get_mut(&guild_id).unwrap();
 
     // Extract the needed data before match statement to avoid borrow conflicts
@@ -667,15 +677,14 @@ async fn duration_impl(
             *end_time = new_end;
 
             // Save state changes
-            settings.save()?;
+            settings.save(&pool).await?;
             drop(settings);  // Drop settings early to avoid borrowing conflicts
 
             // Edit the original announcement message
             if let Ok(mut msg) = channel_id.message(&ctx, msg_id).await {
                 let new_content = msg.content.clone()
                     .replace(
-                        &msg.content.rsplit("<t:").nth(0).unwrap_or("")
-                            .rsplit_once(">").map(|(_, rest)| rest).unwrap_or(""),
+                        msg.content.rsplit("<t:").next().unwrap_or("").rsplit_once(">").map(|(_, rest)| rest).unwrap_or(""),
                         &format!("\nVoting ends {}.", discord_timestamp(new_end, TimestampStyle::ShortDateTime))
                     );
                 
@@ -731,6 +740,7 @@ pub async fn submit(
     ctx: Context<'_>,
     #[description = "Your tree name suggestion (lowercase letters only)"] name: String,
 ) -> Result<(), Error> {
+    let pool = Arc::clone(&ctx.data().pool);
     let guild_id = ctx.guild_id().unwrap();
     let user_id = ctx.author().id;
     let tree_name = name.to_lowercase();
@@ -771,7 +781,7 @@ pub async fn submit(
             }
         };
 
-        settings.save()?;
+        settings.save(&pool).await?;
         ctx.say(msg).await?;
     } else {
         ctx.say("Submissions are not currently open.").await?;
@@ -921,6 +931,7 @@ pub async fn handle_button(
     component: &ComponentInteraction,
     data: Data,
 ) -> Result<(), Error> {
+    let pool = Arc::clone(&data.pool);
     debug!("Handling button interaction: {}", component.data.custom_id);
 
     if component.data.custom_id.starts_with("vote_page_") {
@@ -975,7 +986,7 @@ pub async fn handle_button(
                                 "You can't vote for your own submission!".to_string()
                             } else {
                                 votes.insert(user_id, choice);
-                                settings.save()?;
+                                settings.save(&pool).await?;
                                 format!("Your vote for `{}` has been recorded!", selected_tree)
                             }
                         } else {
@@ -1156,6 +1167,7 @@ pub async fn remove(
 ) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let mut settings = ctx.data().settings.write().await;
+    let pool = Arc::clone(&ctx.data().pool);
     let guild = settings.guilds.get_mut(&guild_id).unwrap();
 
     match &mut guild.lorax_state {
@@ -1163,7 +1175,7 @@ pub async fn remove(
             if let Some((user_id, _)) = submissions.iter().find(|(_, name)| name == &&tree_name) {
                 let user_id = *user_id;
                 submissions.remove(&user_id);
-                settings.save()?;
+                settings.save(&pool).await?;
 
                 let msg = if let Some(reason) = reason {
                     format!(
@@ -1196,7 +1208,7 @@ pub async fn remove(
                 }
 
                 submissions.retain(|_, name| name != &tree_name);
-                settings.save()?;
+                settings.save(&pool).await?;
 
                 let msg = if let Some(reason) = reason {
                     format!(
@@ -1220,7 +1232,7 @@ pub async fn remove(
                         *vote_idx -= 1;
                     }
                 }
-                settings.save()?;
+                settings.save(&pool).await?;
 
                 let msg = if let Some(reason) = reason {
                     format!(

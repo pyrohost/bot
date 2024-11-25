@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            select id, stats_category, nodes_channel, network_channel, network_total_channel,\n                    storage_channel, memory_channel, lorax_role, lorax_channel, lorax_state\n            from guilds\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "stats_category",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "nodes_channel",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "network_channel",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "network_total_channel",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "storage_channel",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "memory_channel",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "lorax_role",
+        "ordinal": 7,
+        "type_info": "Integer"
+      },
+      {
+        "name": "lorax_channel",
+        "ordinal": 8,
+        "type_info": "Integer"
+      },
+      {
+        "name": "lorax_state",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "8de268607a2fefda02bb072bcf8714c45da85116b0f80416238b43ff85811162"
+}

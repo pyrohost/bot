@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            select id, modrinth_id, testing_servers, max_testing_servers\n            from users\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "modrinth_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "testing_servers",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "max_testing_servers",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "0172ce7a7806501cc27611f99fd908ac058fa623d39e639913b3fdc728401f1e"
+}

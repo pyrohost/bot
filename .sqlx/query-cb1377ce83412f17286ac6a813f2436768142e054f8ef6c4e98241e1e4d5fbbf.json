@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                insert into users (\n                    id, modrinth_id, testing_servers, max_testing_servers\n                ) VALUES ($1, $2, $3, $4)\n                on conflict(id) do update set\n                    modrinth_id = excluded.modrinth_id,\n                    testing_servers = excluded.testing_servers,\n                    max_testing_servers = excluded.max_testing_servers\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "cb1377ce83412f17286ac6a813f2436768142e054f8ef6c4e98241e1e4d5fbbf"
+}

@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use poise::serenity_prelude::{ButtonStyle, CreateActionRow, CreateButton, RoleId};
 use rand::{thread_rng, Rng};
 use serde::Deserialize;
-use std::vec;
+use std::{sync::Arc, vec};
 
 const STAFF_ROLE: RoleId = RoleId::new(1104932372467695768);
 
@@ -42,6 +42,7 @@ pub async fn link(
     ctx: Context<'_>,
     #[description = "Your Modrinth user ID"] modrinth_id: String,
 ) -> Result<(), Error> {
+    let pool = Arc::clone(&ctx.data().pool);
     let user_id = ctx.author().id;
     let verification_code = format!("pyro-{}", thread_rng().gen::<u32>());
 
@@ -124,7 +125,7 @@ pub async fn link(
                                 let mut user_settings = settings.get_user_settings(user_id);
                                 user_settings.modrinth_id = Some(modrinth_id.clone());
                                 settings.set_user_settings(user_id, user_settings);
-                                settings.save()?;
+                                settings.save(&pool).await?;
                             }
 
                             msg.edit(ctx, poise::CreateReply::default()
@@ -196,6 +197,8 @@ pub async fn create_test_server(
     if !check_staff_role(ctx).await? {
         return Err("You need the Staff role to use this command".into());
     }
+
+    let pool = Arc::clone(&ctx.data().pool);
 
     let hours = hours.unwrap_or(4).min(24);
     let name = name.unwrap_or_else(|| "My Testing Server".to_string());
@@ -273,7 +276,7 @@ pub async fn create_test_server(
             deletion_time,
         });
     settings.set_user_settings(discord_id, user_settings);
-    settings.save()?;
+    settings.save(&pool).await?;
 
     ctx.say(format!(
         "Created testing server for `{}` (ID: [{}](https://modrinth.com/servers/manage/{})). Will be deleted <t:{}:R>.",
@@ -350,6 +353,8 @@ pub async fn delete_test_server(
         return Err("You need the Staff role to use this command".into());
     }
 
+    let pool = Arc::clone(&ctx.data().pool);
+
     let mut settings = ctx.data().settings.write().await;
     let user_settings = settings.get_user_settings(ctx.author().id);
 
@@ -388,7 +393,7 @@ pub async fn delete_test_server(
     }
 
     user_settings.testing_servers.remove(server_idx);
-    settings.save()?;
+    settings.save(&pool).await?;
 
     ctx.say(format!("Successfully deleted server `{}`", server_id))
         .await?;

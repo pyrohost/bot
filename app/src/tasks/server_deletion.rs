@@ -1,7 +1,7 @@
 use crate::{Data, Error};
 use chrono::Utc;
 use poise::serenity_prelude as serenity;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use crate::tasks::Task;
 
@@ -16,6 +16,8 @@ impl ServerDeletionTask {
 #[async_trait]
 impl Task for ServerDeletionTask {
     async fn run(&self, _ctx: &serenity::Context, data: Data) -> Result<(), Error> {
+        let pool = Arc::clone(&data.pool);
+
         loop {
             let master_key = std::env::var("ARCHON_MASTER_KEY").expect("MASTER_KEY not set");
             let client = reqwest::Client::new();
@@ -43,7 +45,7 @@ impl Task for ServerDeletionTask {
                 }
 
                 if changes_made {
-                    settings.save()?;
+                    settings.save(&pool).await?;
                 }
             }
 

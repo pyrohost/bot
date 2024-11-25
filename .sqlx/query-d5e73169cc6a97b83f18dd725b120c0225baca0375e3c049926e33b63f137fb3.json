@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                insert into guilds (\n                    id, stats_category, nodes_channel, network_channel, \n                    network_total_channel, storage_channel, memory_channel,\n                    lorax_role, lorax_channel, lorax_state\n                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n                on conflict(id) do update set\n                    stats_category = excluded.stats_category,\n                    nodes_channel = excluded.nodes_channel,\n                    network_channel = excluded.network_channel,\n                    network_total_channel = excluded.network_total_channel,\n                    storage_channel = excluded.storage_channel,\n                    memory_channel = excluded.memory_channel,\n                    lorax_role = excluded.lorax_role,\n                    lorax_channel = excluded.lorax_channel,\n                    lorax_state = excluded.lorax_state\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "d5e73169cc6a97b83f18dd725b120c0225baca0375e3c049926e33b63f137fb3"
+}

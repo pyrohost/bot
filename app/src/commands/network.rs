@@ -3,7 +3,7 @@ use poise::serenity_prelude::{
     self as serenity, ButtonStyle, Channel, ChannelType, CreateActionRow, CreateButton,
     CreateChannel,
 };
-use std::vec;
+use std::{sync::Arc, vec};
 
 async fn create_stat_channel(
     ctx: &Context<'_>,
@@ -37,6 +37,8 @@ pub async fn setup_stats(
     let guild_id = ctx
         .guild_id()
         .ok_or("This command must be used in a server")?;
+
+    let pool = Arc::clone(&ctx.data().pool);
 
     // Find existing channels in category
     let channels = guild_id.channels(&ctx.serenity_context().http).await?;
@@ -139,7 +141,7 @@ pub async fn setup_stats(
         }
 
         settings.set_guild_settings(guild_id, guild_settings);
-        settings.save()?;
+        settings.save(&pool).await?;
     }
 
     poise::say_reply(ctx, "✅ Stats channels setup complete!").await?;
