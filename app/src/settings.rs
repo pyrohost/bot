@@ -1,4 +1,4 @@
-use poise::serenity_prelude::{self as serenity, UserId};
+use poise::serenity_prelude::{self as serenity, ChannelId, RoleId, UserId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -70,13 +70,13 @@ pub enum LoraxState {
         message_id: serenity::MessageId,
         submissions: HashMap<UserId, String>,
         location: String,
-        voting_duration: u64,        // Add this field
+        voting_duration: u64, // Add this field
         tiebreaker_duration: u64,
     },
     Voting {
         end_time: i64,
         message_id: serenity::MessageId,
-        thread_id: Option<serenity::ChannelId>,  // Add this
+        thread_id: Option<serenity::ChannelId>, // Add this
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
         submissions: HashMap<UserId, String>,
@@ -86,7 +86,7 @@ pub enum LoraxState {
     TieBreaker {
         end_time: i64,
         message_id: serenity::MessageId,
-        thread_id: Option<serenity::ChannelId>,  // Add this
+        thread_id: Option<serenity::ChannelId>, // Add this
         options: Vec<String>,
         votes: HashMap<UserId, usize>,
         location: String,
@@ -103,11 +103,29 @@ impl Default for LoraxState {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct LevelSettings {
+    pub xp: HashMap<UserId, u32>,
+    pub roles: HashMap<u32, RoleId>,
+    pub channel: Option<ChannelId>,
+}
+
+impl LevelSettings {
+    pub fn new() -> LevelSettings {
+        LevelSettings {
+            xp: HashMap::new(),
+            roles: HashMap::new(),
+            channel: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Settings {
     pub guilds: HashMap<serenity::GuildId, GuildSettings>,
     #[serde(skip)]
     file_path: PathBuf,
     pub user_settings: HashMap<UserId, UserSettings>,
+    pub levels_settings: LevelSettings,
 }
 
 impl Default for Settings {
@@ -116,6 +134,7 @@ impl Default for Settings {
             guilds: HashMap::new(),
             file_path: PathBuf::from("settings.json"),
             user_settings: HashMap::new(),
+            levels_settings: LevelSettings::new(),
         }
     }
 }
@@ -164,5 +183,41 @@ impl Settings {
     pub fn set_user_settings(&mut self, user_id: UserId, settings: UserSettings) {
         self.user_settings.insert(user_id, settings);
     }
-}
 
+    pub fn add_level_role(&mut self, role_id: RoleId, level: u32) {
+        self.levels_settings.roles.insert(level, role_id);
+    }
+
+    pub fn remove_role_by_level(&mut self, level: u32) {
+        self.levels_settings.roles.remove(&level);
+    }
+
+    pub fn get_level_roles(&mut self) -> &HashMap<u32, RoleId> {
+        &self.levels_settings.roles
+    }
+
+    pub fn remove_role_by_role_id(&mut self, role: RoleId) {
+        if let Some(key) = self
+            .levels_settings
+            .roles
+            .iter()
+            .find(|(_, v)| **v == role)
+            .map(|(k, _)| *k)
+        {
+            self.levels_settings.roles.remove(&key);
+        }
+    }
+
+    pub fn add_xp(&mut self, user_id: UserId, xp: u32) {
+        let existing = self.levels_settings.xp.get(&user_id).unwrap_or(&1);
+        self.levels_settings.xp.insert(user_id, *existing + xp);
+    }
+
+    pub fn set_level_channel(&mut self, channel_id: ChannelId) {
+        self.levels_settings.channel = Some(channel_id);
+    }
+
+    pub fn get_xp(&mut self, user_id: UserId) -> Option<&u32> {
+        self.levels_settings.xp.get(&user_id)
+    }
+}
